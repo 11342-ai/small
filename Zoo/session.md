@@ -180,3 +180,4 @@ session_dir: ~/.small/sessions
 - 会话列表的 CLI 呈现（`/list`、`/use` 交互命令）——第一版仅 `--session` flag，交互命令后续评估。
 - 坏行审计（跳过数统计）——第一版静默跳过，有需要再补。
 - 自动恢复"最近会话"（不带 flag 时）——第一版缺省新建时间戳会话，自动恢复后续评估。
+- **`Turn` 上提 domain（扩展点）**：当第二个模块（memory / trace 等）也要消费 `agent.Turn` 时，把 `Turn` 上提为独立包（`internal/domain`），agent 与 session 共同依赖，即可消除 `session.Message` 字段镜像与 persist.go 的翻译；当前只有一个消费方，暂不动作（YAGNI），届时"部件 vs 外壳"（踩坑 #8）讨论自然升级。

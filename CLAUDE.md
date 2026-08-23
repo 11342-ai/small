@@ -46,6 +46,11 @@ gofmt -l .                          # 格式检查（无输出为干净）
 go run . --session mychat          # 开始/续聊会话 mychat（聊几句后输入 exit 退出）
 go run . --session mychat          # 再次进入，上下文还在
 cat ~/.small/sessions/mychat.jsonl # 落盘文件人读可查（JSONL，一行一条消息）
+
+cloc . --not-match-f='_test\.go$'
+cloc . --not-match-f='_test\.go$' --not-match-d='^\.'      # 同时排除隐藏目录（如 .git/.idea）
+cloc . --include-lang=Go --not-match-f='_test\.go$'         # 只看 Go，忽略 md/yml 等
+cloc . --by-file --not-match-f='_test\.go$'                 # 逐文件明细
 ```
 
 ## 代码风格与约定
