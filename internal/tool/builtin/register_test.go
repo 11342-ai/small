@@ -30,7 +30,7 @@ func TestRegisterBuiltins_WithMemory(t *testing.T) {
 	if err := RegisterBuiltins(reg, mem); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, name := range []string{"echo", "memory_search", "memory_get", "memory_save"} {
+	for _, name := range []string{"echo", "get_current_time", "memory_search", "memory_get", "memory_save"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Errorf("%s should be registered", name)
 		}
