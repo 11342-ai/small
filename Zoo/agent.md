@@ -109,7 +109,7 @@ provider 流式的空闲超时 bug（请求绑定外层 ctx，取消 `streamCtx`
 ## 8. 已知扩展点
 
 - **历史截断**：超长对话防 context window 溢出（当前 `Run` 无上限）。
-- **工具调用循环**：agent 自主多步（如 function calling）。
+- ~~**工具调用循环**~~：**已实现**——`Turn/Result` 新增工具调用形态，`Agent.Run` 变为多轮循环（执行 + 回灌，`maxToolRounds=8` 兜底），翻译与分片拼接收敛在 adapter，见 `tool.md`。
 - **流式输出上推到端口**：当前 adapter 内部拼完整回复再返回，未来可让 `Result` 携带回调或增量通道。
 - **`finish_reason` 暴露**：内容被 `max_tokens` 截断时当前静默返回，若要感知截断需扩展端口。
-- **Agent 单测**：`Run` 的历史累积/思考不入历史行为尚未单测（adapter 已覆盖，循环层待补）。
+- ~~**Agent 单测**~~：**已补**——`agent_test.go` 覆盖 `Run` 的历史累积、思考不入历史、工具循环、未知工具回灌、框架错误中止、超轮数兜底。

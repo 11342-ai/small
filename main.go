@@ -2,6 +2,7 @@
 //
 //	main → internal/agent → internal/provider
 //	                  ↘  internal/config
+//	                  ↘  internal/tool（agent 工具循环依赖；工具实现在组合根注册）
 package main
 
 import (
@@ -15,6 +16,8 @@ import (
 	"small/internal/agent"
 	"small/internal/config"
 	"small/internal/provider"
+	"small/internal/tool"
+	"small/internal/tool/builtin"
 )
 
 func main() {
@@ -26,10 +29,18 @@ func main() {
 
 	// 2. 装配：provider.Client → 适配器 → Agent，依赖全部在组合根注入。
 	//    WithThinking(true)：开启思考模式，让 Result.Thinking 携带推理过程。
+	//    结构协作对象显式入参：adapter 收冻结的声明（reg.List()），agent 收注册表执行调用。
 	client := provider.New(cfg)
+	reg := tool.New()
+	if err := reg.Register(builtin.Echo()); err != nil {
+		log.Fatalf("register tool: %v", err)
+	}
 	a := agent.New(
-		agent.NewProviderChat(client, cfg.Model, agent.WithThinking(true)),
-		agent.WithSystemPrompt("你是一个简洁的助手，回答尽量控制在三句话以内。"),
+		agent.NewProviderChat(client, cfg.Model, reg.List(),
+			agent.WithThinking(true),
+		),
+		reg,
+		agent.WithSystemPrompt("你是一个简洁的助手，回答尽量控制在三句话以内。可用工具：echo（原样返回文本）。"),
 	)
 
 	// 3. 多轮对话循环：stdin 逐行输入，"exit" 退出。

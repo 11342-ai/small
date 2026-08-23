@@ -1,6 +1,9 @@
 package provider
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // ChatRequest 一次补全请求的参数，字段与 DeepSeek 兼容接口的
 // POST /chat/completions 请求体一一对应。
@@ -16,6 +19,33 @@ type ChatRequest struct {
 	TopP            *float64        `json:"top_p,omitempty"`
 	Logprobs        bool            `json:"logprobs,omitempty"`
 	TopLogprobs     int             `json:"top_logprobs,omitempty"`
+	Tools           []Tool          `json:"tools,omitempty"`
+}
+
+// Tool 一次请求中提供给模型的一个工具声明（OpenAI 兼容格式）。
+type Tool struct {
+	Type     string       `json:"type"` // function
+	Function ToolFunction `json:"function"`
+}
+
+// ToolFunction 工具声明的函数部分，Parameters 即 JSON Schema。
+type ToolFunction struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+// ToolCall 模型在响应中请求的一次工具调用。
+type ToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"` // function
+	Function ToolCallFunction `json:"function"`
+}
+
+// ToolCallFunction 工具调用的函数部分，Arguments 为参数 JSON 文本。
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // Message 一条对话消息。
@@ -23,6 +53,10 @@ type Message struct {
 	Role             string `json:"role"`
 	Content          string `json:"content"`
 	ReasoningContent string `json:"reasoning_content,omitempty"`
+	// ToolCalls 仅 assistant 消息携带：模型请求的工具调用列表。
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	// ToolCallID 仅 tool 消息携带：指向被执行的调用。
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // Thinking 控制深度思考模式（deepseek-v4 等模型支持）。

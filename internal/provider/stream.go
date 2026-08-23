@@ -28,6 +28,15 @@ type streamChunk struct {
 			Role             string `json:"role,omitempty"`
 			Content          string `json:"content,omitempty"`
 			ReasoningContent string `json:"reasoning_content,omitempty"`
+			ToolCalls        []struct {
+				Index    int    `json:"index"`
+				ID       string `json:"id,omitempty"`
+				Type     string `json:"type,omitempty"`
+				Function struct {
+					Name      string `json:"name,omitempty"`
+					Arguments string `json:"arguments,omitempty"`
+				} `json:"function,omitempty"`
+			} `json:"tool_calls,omitempty"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason,omitempty"`
 	} `json:"choices"`
@@ -127,6 +136,19 @@ func (c *Client) Stream(ctx context.Context, req *ChatRequest, cbs StreamCallbac
 			if d := choice.Delta.Content; d != "" && cbs.OnContent != nil {
 				if err := cbs.OnContent(d); err != nil {
 					return fmt.Errorf("provider: OnContent: %w", err)
+				}
+			}
+			for _, tc := range choice.Delta.ToolCalls {
+				if cbs.OnToolCall == nil {
+					continue
+				}
+				if err := cbs.OnToolCall(ToolCallDelta{
+					Index:     tc.Index,
+					ID:        tc.ID,
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				}); err != nil {
+					return fmt.Errorf("provider: OnToolCall: %w", err)
 				}
 			}
 		}

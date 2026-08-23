@@ -308,3 +308,77 @@ func TestStream_APIError(t *testing.T) {
 		t.Fatalf("want *APIError(401), got %v", err)
 	}
 }
+
+// ---- 工具调用 ----
+
+func TestComplete_WithTools(t *testing.T) {
+	var got struct {
+		Tools []provider.Tool `json:"tools"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Errorf("bad request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"echo","arguments":"{\"message\":\"hi\"}"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer srv.Close()
+
+	resp, err := newClient(t, srv).Complete(context.Background(), &provider.ChatRequest{
+		Model:    "m",
+		Messages: []provider.Message{{Role: "user", Content: "hi"}},
+		Tools: []provider.Tool{{
+			Type:     "function",
+			Function: provider.ToolFunction{Name: "echo", Description: "echo", Parameters: json.RawMessage(`{"type":"object"}`)},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Tools) != 1 || got.Tools[0].Function.Name != "echo" {
+		t.Errorf("request tools = %+v, want one echo", got.Tools)
+	}
+	if len(resp.Choices) != 1 || len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("response tool_calls missing: %+v", resp.Choices)
+	}
+	tc := resp.Choices[0].Message.ToolCalls[0]
+	if tc.ID != "call_1" || tc.Function.Name != "echo" || tc.Function.Arguments != `{"message":"hi"}` {
+		t.Errorf("tool call = %+v", tc)
+	}
+}
+
+func TestStream_ToolCallDeltas(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		for _, c := range []string{
+			`{"choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"echo","arguments":""}}]}}]}`,
+			`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"message\":"}}]}}]}`,
+			`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"hi\"}"}}]}}]}`,
+		} {
+			fmt.Fprintf(w, "data: %s\n\n", c)
+			flusher.Flush()
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer srv.Close()
+
+	var deltas []provider.ToolCallDelta
+	err := newClient(t, srv).Stream(context.Background(), &provider.ChatRequest{}, provider.StreamCallbacks{
+		OnToolCall: func(d provider.ToolCallDelta) error { deltas = append(deltas, d); return nil },
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(deltas) != 3 {
+		t.Fatalf("deltas = %+v, want 3", deltas)
+	}
+	if deltas[0].Index != 0 || deltas[0].ID != "call_1" || deltas[0].Name != "echo" {
+		t.Errorf("first delta = %+v", deltas[0])
+	}
+	if deltas[1].Arguments != `{"message":` || deltas[2].Arguments != `"hi"}` {
+		t.Errorf("argument fragments = %q, %q", deltas[1].Arguments, deltas[2].Arguments)
+	}
+}
