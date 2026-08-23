@@ -164,6 +164,43 @@ func (s *Store) Append(id string, msgs []Message) error {
 	return nil
 }
 
+// Rewrite 全量覆写会话文件（截断/摘要后同步盘用，见 Zoo/compaction.md）。
+// append-only 无法"删旧行"，截断后必须整体重写；写入临时文件后 rename 原子替换，
+// 避免 O_TRUNC 直写崩溃留下空/半文件。
+func (s *Store) Rewrite(id string, msgs []Message) error {
+	if err := validateID(id); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tmp, err := os.CreateTemp(s.dir, id+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("session: create temp for %q: %w", id, err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // 仅失败路径生效：成功后 rename 已移走文件
+
+	for _, m := range msgs {
+		data, err := json.Marshal(m)
+		if err != nil {
+			tmp.Close()
+			return fmt.Errorf("session: marshal message: %w", err)
+		}
+		if _, err := tmp.Write(append(data, '\n')); err != nil {
+			tmp.Close()
+			return fmt.Errorf("session: write temp for %q: %w", id, err)
+		}
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("session: close temp for %q: %w", id, err)
+	}
+	if err := os.Rename(tmpName, s.path(id)); err != nil {
+		return fmt.Errorf("session: rename for %q: %w", id, err)
+	}
+	return nil
+}
+
 // Delete 删除会话文件；文件不存在视为删除成功（幂等）。
 func (s *Store) Delete(id string) error {
 	if err := validateID(id); err != nil {

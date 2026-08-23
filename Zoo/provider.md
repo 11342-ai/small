@@ -64,12 +64,12 @@ var _ Streamer = (*Client)(nil)
 - `Message` 含 `ReasoningContent`（非流式响应的思考过程）。
 - `ThinkingEnabled()/ThinkingDisabled()` 辅助构造。
 - `APIError{Status, Message}`——从 OpenAI 兼容错误格式 `{"error":{"message":...}}` 归一化，调用方可 `errors.As`。
-- **内部 `chatPayload`**：嵌入 `ChatRequest` 并补 `stream` 开关——对外 DTO 保持纯净，发送时注入，不暴露。
+- **内部 `chatPayload`**：嵌入 `ChatRequest` 并补 `stream` 开关与 `stream_options`——对外 DTO 保持纯净，发送时注入，不暴露。`StreamOptions{IncludeUsage}` 为流式专用：开启后服务端在流末尾返回携带 `usage` 的 chunk（预算校准用，见 `compaction.md` 3.4）。
 
 ## 4. 流式设计
 
-- **回调形态**：`StreamCallbacks`（`OnThinking`/`OnContent`/`OnDone`，nil-safe），回调返回非 nil error 立即中止流；**不设 `OnError`**，流中错误只走 `Stream` 返回值，避免状态分散。
-- **SSE 解析**：`bufio.Scanner` 按行读，识别 `data:` 前缀与 `[DONE]` 结束标记；EOF 无 `[DONE]` 宽容视为正常结束（触发 `OnDone`）。
+- **回调形态**：`StreamCallbacks`（`OnThinking`/`OnContent`/`OnToolCall`/`OnUsage`/`OnDone`，nil-safe），回调返回非 nil error 立即中止流；**不设 `OnError`**，流中错误只走 `Stream` 返回值，避免状态分散。
+- **SSE 解析**：`bufio.Scanner` 按行读，识别 `data:` 前缀与 `[DONE]` 结束标记；EOF 无 `[DONE]` 宽容视为正常结束（触发 `OnDone`）。`stream_options.include_usage` 开启时，流末尾会出现 `choices: []` + `usage` 的 chunk，解析后经 `OnUsage` 回调（`Usage{PromptTokens/CompletionTokens/TotalTokens}`，真实服务端计数）。
 - **streamCtx 贯穿建连与流中**（关键设计，见踩坑记录）：流式请求必须绑定 `streamCtx`，空闲超时/外部取消才能中断 transport 的读。
 - **空闲超时**：`time.AfterFunc` + 每次读到数据 `Reset`，触发则取消整个流上下文，返回 `ErrStreamIdle`（用 `atomic.Bool` 标记区分空闲超时与外部取消）。
 

@@ -24,6 +24,9 @@ type StreamCallbacks struct {
 	OnContent func(segment string) error
 	// OnToolCall 收到一段工具调用增量（delta.tool_calls）时触发。
 	OnToolCall func(delta ToolCallDelta) error
+	// OnUsage 收到流末尾的 usage chunk（stream_options.include_usage 开启时）
+	// 触发，携带服务端真实 token 计数，供调用方校准上下文预算。
+	OnUsage func(u Usage) error
 	// OnDone 流正常结束时触发（收到 [DONE] 或服务端优雅关闭）。
 	OnDone func() error
 }

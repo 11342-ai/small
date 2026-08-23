@@ -140,6 +140,56 @@ func TestStore_DeleteIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestStore_RewriteOverwrites(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Append("s1", []Message{
+		{Role: "user", Content: "a"},
+		{Role: "assistant", Content: "b"},
+		{Role: "user", Content: "c"},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	// 模拟截断：只保留最近一条，全量覆写。
+	if err := s.Rewrite("s1", []Message{{Role: "user", Content: "c"}}); err != nil {
+		t.Fatalf("Rewrite: %v", err)
+	}
+	got, err := s.Load("s1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got) != 1 || got[0].Content != "c" {
+		t.Errorf("after rewrite = %+v, want [c]", got)
+	}
+	// Rewrite 后仍可继续 Append（追加到重写后的文件上，不复活旧数据）。
+	if err := s.Append("s1", []Message{{Role: "assistant", Content: "d"}}); err != nil {
+		t.Fatalf("Append after rewrite: %v", err)
+	}
+	got, err = s.Load("s1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got) != 2 || got[0].Content != "c" || got[1].Content != "d" {
+		t.Errorf("after append = %+v, want [c, d]", got)
+	}
+}
+
+func TestStore_RewriteEmptyFile(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Append("s1", []Message{{Role: "user", Content: "x"}}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := s.Rewrite("s1", nil); err != nil {
+		t.Fatalf("Rewrite empty: %v", err)
+	}
+	got, err := s.Load("s1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("after empty rewrite = %+v, want empty", got)
+	}
+}
+
 func TestStore_SessionsAreIsolated(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.Append("s1", []Message{{Role: "user", Content: "one"}}); err != nil {

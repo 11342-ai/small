@@ -66,6 +66,7 @@ func main() {
 		agent.WithSystemPrompt("你是一个简洁的助手，回答尽量控制在三句话以内。可用工具：echo（原样返回文本）。"),
 		agent.WithSession(id),
 		agent.WithHistory(agent.FromSession(msgs)),
+		agent.WithTokenBudget(cfg.MaxTokens),
 	)
 
 	// 3. 多轮对话循环：stdin 逐行输入，"exit" 退出。

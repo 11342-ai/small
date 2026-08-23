@@ -10,7 +10,7 @@ small/
 ├── internal/
 │   ├── config/             # 配置：环境变量优先 + 可选 config.yml，构造注入下游
 │   ├── provider/           # 传输层：DeepSeek HTTP/SSE 调用、重试、超时（含 retry 子包）
-│   ├── agent/              # 领域层：多轮对话循环/历史/自动持久化；adapter.go 翻译 provider
+│   ├── agent/              # 领域层：多轮对话循环/历史/自动持久化/预算截断；adapter.go 翻译 provider
 │   ├── session/            # 会话持久化：JSONL 每会话一文件，agent 的存储部件
 │   └── tool/               # 工具：声明/执行/注册（Registry）+ 内置工具（builtin）
 └── Zoo/                    # 设计文档、约定、踩坑记录
@@ -39,6 +39,7 @@ gofmt -l .                          # 格式检查（无输出为干净）
 | `DEEPSEEK_MODEL` | 模型名 | `deepseek-v4-pro` |
 | `SMALL_SESSION_DIR` | 会话存储目录 | `~/.small/sessions` |
 | `SMALL_CONFIG` | 配置文件路径 | `~/.small/config.yml` |
+| `SMALL_MAX_TOKENS` | 上下文预算（估算 token，显式 `0` 禁用截断） | `8000` |
 
 示例：
 
@@ -98,5 +99,6 @@ cloc . --by-file --not-match-f='_test\.go$'                 # 逐文件明细
 | 会话持久化 | JSONL 每会话一文件 + Run 成功自动 append（不引 SQLite） | 零依赖、崩溃只丢半行、续聊场景够用；要查询再迁 |
 | 会话恢复 | 组合根 `store.Load` + `WithHistory` 注入 | New 不返回 error，文件错误属系统边界，组合根 fail fast |
 | 配置来源 | 环境变量优先 + 可选 `~/.small/config.yml`（yaml.v3）；机密只走环境变量 | 配置项增长后可持久化，API key 不落配置文件 |
+| 上下文压缩 | 第一版只做"预算截断 + 真实 usage 校准"（`WithTokenBudget`），摘要后续增强 | 真实 usage（流式 `include_usage`）优先、字符估算兜底；截断同步重写（Rewrite）防"复活" |
 | 输出形态 | `Result{Reply, Thinking}` struct | 类型安全、可扩展 |
 | thinking | `WithThinking` 默认关 | 显式开启才付代价 |

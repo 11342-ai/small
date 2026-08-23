@@ -101,9 +101,10 @@ func (p *providerChat) Complete(ctx context.Context, turns []Turn) (Result, erro
 }
 
 // completeViaStream 走流式：增量 content 拼成回复正文，增量 reasoning 拼成思考过程，
-// 增量 tool_calls 按 Index 拼接还原完整调用。
+// 增量 tool_calls 按 Index 拼接还原完整调用；流末尾 usage chunk 提供真实 prompt_tokens。
 func (p *providerChat) completeViaStream(ctx context.Context, s provider.Streamer, req *provider.ChatRequest) (Result, error) {
 	var reply, thinking strings.Builder
+	var promptTokens int
 	// 流式调用按 Index 累积：ID/Name 常只在首个分片出现，Arguments 需拼接。
 	// 稀疏 Index（如跳号）也能容纳。
 	type acc struct {
@@ -114,6 +115,10 @@ func (p *providerChat) completeViaStream(ctx context.Context, s provider.Streame
 	err := s.Stream(ctx, req, provider.StreamCallbacks{
 		OnThinking: func(seg string) error { thinking.WriteString(seg); return nil },
 		OnContent:  func(seg string) error { reply.WriteString(seg); return nil },
+		OnUsage: func(u provider.Usage) error {
+			promptTokens = u.PromptTokens
+			return nil
+		},
 		OnToolCall: func(d provider.ToolCallDelta) error {
 			for len(accs) <= d.Index {
 				accs = append(accs, &acc{})
@@ -139,7 +144,7 @@ func (p *providerChat) completeViaStream(ctx context.Context, s provider.Streame
 		}
 		calls = append(calls, ToolCall{ID: a.id, Name: a.name, Args: a.args.String()})
 	}
-	return Result{Reply: reply.String(), Thinking: thinking.String(), ToolCalls: calls}, nil
+	return Result{Reply: reply.String(), Thinking: thinking.String(), ToolCalls: calls, PromptTokens: promptTokens}, nil
 }
 
 // completeViaNonStream 走非流式（降级路径）。
@@ -156,5 +161,9 @@ func (p *providerChat) completeViaNonStream(ctx context.Context, req *provider.C
 	for _, c := range msg.ToolCalls {
 		calls = append(calls, ToolCall{ID: c.ID, Name: c.Function.Name, Args: c.Function.Arguments})
 	}
-	return Result{Reply: msg.Content, Thinking: msg.ReasoningContent, ToolCalls: calls}, nil
+	var promptTokens int
+	if resp.Usage != nil {
+		promptTokens = resp.Usage.PromptTokens
+	}
+	return Result{Reply: msg.Content, Thinking: msg.ReasoningContent, ToolCalls: calls, PromptTokens: promptTokens}, nil
 }

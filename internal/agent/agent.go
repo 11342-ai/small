@@ -54,6 +54,9 @@ type Result struct {
 	// ToolCalls 模型请求的工具调用；非空表示本轮回灌前需要执行工具，
 	// 由 Agent 循环负责执行并回灌结果后继续下一轮。
 	ToolCalls []ToolCall
+	// PromptTokens 本轮请求的服务端真实输入 token 数（usage.prompt_tokens），
+	// 0 表示未提供（如某些降级路径）。Agent 用它校准上下文预算（见 compact.go）。
+	PromptTokens int
 }
 
 // 编译期断言：确保适配器在编译期满足端口（实现见 adapter.go）。
@@ -64,14 +67,18 @@ const maxToolRounds = 8
 
 // Agent 持有对话历史并驱动多轮循环：每调用一次 Run 完成一轮 user→assistant。
 // store/sid 非空时启用会话持久化：Run 成功结束自动把本轮新增历史追加落盘（见 persist.go）。
+// budget > 0 时启用上下文预算：每轮追加输入后按估算 token 截断历史（见 compact.go）。
 type Agent struct {
-	chat      Completer
-	system    string
-	history   []Turn
-	tools     *tool.Registry // 为 nil 时工具调用不可用，退化为纯对话
-	store     *session.Store // 为 nil 时不做持久化（纯对话）
-	sid       string         // 当前会话 id；仅 store 非 nil 且 sid 非空时生效
-	persisted int            // 已落盘的历史条数（恢复/注入初始历史后=len(history)）
+	chat        Completer
+	system      string
+	history     []Turn
+	tools       *tool.Registry // 为 nil 时工具调用不可用，退化为纯对话
+	store       *session.Store // 为 nil 时不做持久化（纯对话）
+	sid         string         // 当前会话 id；仅 store 非 nil 且 sid 非空时生效
+	persisted   int            // 已落盘的历史条数（恢复/注入初始历史后=len(history)）
+	budget      int            // 估算 token 预算；<=0 不启用截断
+	baseline    int            // 最近一次 Complete 的真实 prompt_tokens（usage）；0 表示无基线
+	baselineLen int            // 基线对应的历史长度（Complete 返回瞬间 len(history)）
 }
 
 // Option 以函数式选项配置 Agent。
@@ -98,6 +105,12 @@ func WithHistory(turns []Turn) Option {
 	}
 }
 
+// WithTokenBudget 启用上下文预算（按估算 token，字符近似）：每轮追加输入后
+// 超预算则从头部截断历史（system 与最近一轮保留）。<=0 表示不启用（默认）。
+func WithTokenBudget(maxTokens int) Option {
+	return func(a *Agent) { a.budget = maxTokens }
+}
+
 // New 构造 Agent。结构协作对象以显式参数注入（chat、tools、store），便于测试时替换 mock；
 // tools 为 nil 时退化为纯对话，store 为 nil 时不做持久化。行为开关走 Option。
 func New(chat Completer, tools *tool.Registry, store *session.Store, opts ...Option) *Agent {
@@ -119,11 +132,21 @@ func New(chat Completer, tools *tool.Registry, store *session.Store, opts ...Opt
 // 多轮对话即多次调用 Run，历史在调用间持续累积。
 func (a *Agent) Run(ctx context.Context, userInput string) (Result, error) {
 	a.history = append(a.history, Turn{Role: "user", Content: userInput})
+	if err := a.enforceBudget(); err != nil {
+		// 截断后同步落盘失败必须透传：盘上旧数据与内存不一致，不能静默。
+		return Result{}, err
+	}
 
 	for round := 0; round < maxToolRounds; round++ {
 		result, err := a.chat.Complete(ctx, a.allTurns())
 		if err != nil {
 			return Result{}, err
+		}
+		// 记录真实用量基线：prompt_tokens 对应"发送时的全部输入"，
+		// baselineLen 取 Complete 返回瞬间的历史长度，供下轮预算判断（见 compact.go）。
+		if result.PromptTokens > 0 {
+			a.baseline = result.PromptTokens
+			a.baselineLen = len(a.history)
 		}
 
 		if len(result.ToolCalls) == 0 {

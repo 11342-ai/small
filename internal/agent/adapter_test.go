@@ -458,3 +458,61 @@ func TestProviderChat_ToolMessagesRoundTrip(t *testing.T) {
 		t.Errorf("tool message = %+v", got[1])
 	}
 }
+
+// TestProviderChat_StreamUsage 流式 usage chunk 翻译进 Result.PromptTokens。
+func TestProviderChat_StreamUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		io.WriteString(w, "data: "+`{"choices":[{"index":0,"delta":{"content":"hi"}}]}`+"\n\n")
+		flusher.Flush()
+		io.WriteString(w, "data: "+`{"choices":[],"usage":{"prompt_tokens":99,"completion_tokens":5,"total_tokens":104}}`+"\n\n")
+		flusher.Flush()
+		io.WriteString(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer srv.Close()
+
+	adapter := NewProviderChat(realStreamClient(t, srv), "m1", nil)
+	result, err := adapter.Complete(context.Background(), []Turn{{Role: "user", Content: "hi"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.PromptTokens != 99 {
+		t.Errorf("prompt tokens = %d, want 99", result.PromptTokens)
+	}
+}
+
+// TestProviderChat_NonStreamUsage 非流式 usage 翻译进 Result.PromptTokens；缺省为 0。
+func TestProviderChat_NonStreamUsage(t *testing.T) {
+	adapter := NewProviderChat(&completerOnly{
+		fn: func(context.Context, *provider.ChatRequest) (*provider.ChatResponse, error) {
+			return &provider.ChatResponse{
+				Choices: []provider.Choice{{Message: provider.Message{Content: "hi"}}},
+				Usage:   &provider.Usage{PromptTokens: 55},
+			}, nil
+		},
+	}, "m1", nil)
+
+	result, err := adapter.Complete(context.Background(), []Turn{{Role: "user", Content: "hi"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.PromptTokens != 55 {
+		t.Errorf("prompt tokens = %d, want 55", result.PromptTokens)
+	}
+
+	// 无 Usage 时 PromptTokens 应为 0（调用方按"无真实数据"处理，走估算兜底）。
+	adapterNoUsage := NewProviderChat(&completerOnly{
+		fn: func(context.Context, *provider.ChatRequest) (*provider.ChatResponse, error) {
+			return &provider.ChatResponse{Choices: []provider.Choice{{Message: provider.Message{Content: "hi"}}}}, nil
+		},
+	}, "m1", nil)
+	result, err = adapterNoUsage.Complete(context.Background(), []Turn{{Role: "user", Content: "hi"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.PromptTokens != 0 {
+		t.Errorf("prompt tokens = %d, want 0 (no usage)", result.PromptTokens)
+	}
+}

@@ -100,6 +100,13 @@ type Usage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+// StreamOptions 流式专用选项（仅随流式请求注入，非流式无意义）。
+type StreamOptions struct {
+	// IncludeUsage 为 true 时，服务端在流末尾返回一个携带 usage 的 chunk
+	// （choices 为空）。预算校准依赖它拿到真实的 prompt_tokens 计数。
+	IncludeUsage bool `json:"include_usage"`
+}
+
 // APIError 服务端返回的带状态码的错误。
 type APIError struct {
 	Status  int
@@ -114,8 +121,9 @@ func (e *APIError) Error() string {
 }
 
 // chatPayload 是实际发送到 /chat/completions 的请求体。
-// ChatRequest 保持纯净（不含 stream），发送时在此补上 stream 开关。
+// ChatRequest 保持纯净（不含 stream），发送时在此补上流式开关与流式专用选项。
 type chatPayload struct {
 	ChatRequest
-	Stream bool `json:"stream"`
+	Stream        bool           `json:"stream"`
+	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
 }

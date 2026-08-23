@@ -188,6 +188,71 @@ func TestStream_Success(t *testing.T) {
 	}
 }
 
+func TestStream_UsageChunk(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 请求必须携带 stream_options.include_usage，否则服务端不会回 usage chunk。
+		var payload struct {
+			StreamOptions struct {
+				IncludeUsage bool `json:"include_usage"`
+			} `json:"stream_options"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if !payload.StreamOptions.IncludeUsage {
+			t.Error("stream_options.include_usage not set")
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		fmt.Fprintf(w, "data: %s\n\n", `{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"content":"hi"}}]}`)
+		flusher.Flush()
+		// 流末尾的 usage chunk：choices 为空、仅携带用量。
+		fmt.Fprintf(w, "data: %s\n\n", `{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[],"usage":{"prompt_tokens":123,"completion_tokens":45,"total_tokens":168}}`)
+		flusher.Flush()
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer srv.Close()
+
+	var got provider.Usage
+	called := false
+	err := newClient(t, srv).Stream(context.Background(), &provider.ChatRequest{}, provider.StreamCallbacks{
+		OnContent: func(s string) error { return nil },
+		OnUsage: func(u provider.Usage) error {
+			called = true
+			got = u
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called || got.PromptTokens != 123 || got.TotalTokens != 168 {
+		t.Errorf("usage = %+v (called=%v), want prompt=123 total=168", got, called)
+	}
+}
+
+func TestStream_UsageCallbackErrorAborts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		fmt.Fprintf(w, "data: %s\n\n", `{"choices":[],"usage":{"prompt_tokens":1}}`)
+		flusher.Flush()
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer srv.Close()
+
+	wantErr := errors.New("stop")
+	err := newClient(t, srv).Stream(context.Background(), &provider.ChatRequest{}, provider.StreamCallbacks{
+		OnUsage: func(provider.Usage) error { return wantErr },
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("want %v, got %v", wantErr, err)
+	}
+}
+
 func TestStream_EOFWithoutDone(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

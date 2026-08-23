@@ -108,7 +108,7 @@ provider 流式的空闲超时 bug（请求绑定外层 ctx，取消 `streamCtx`
 
 ## 8. 已知扩展点
 
-- **历史截断**：超长对话防 context window 溢出（当前 `Run` 无上限）。
+- ~~**历史截断**~~：**已实现**——`WithTokenBudget` 按估算 token 截断历史（`compact.go`），超预算从头部成组丢弃（工具轮次不悬空），截断同步重写会话文件，见 `compaction.md`。
 - ~~**工具调用循环**~~：**已实现**——`Turn/Result` 新增工具调用形态，`Agent.Run` 变为多轮循环（执行 + 回灌，`maxToolRounds=8` 兜底），翻译与分片拼接收敛在 adapter，见 `tool.md`。
 - **流式输出上推到端口**：当前 adapter 内部拼完整回复再返回，未来可让 `Result` 携带回调或增量通道。
 - **`finish_reason` 暴露**：内容被 `max_tokens` 截断时当前静默返回，若要感知截断需扩展端口。

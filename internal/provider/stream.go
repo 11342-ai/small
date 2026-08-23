@@ -40,6 +40,9 @@ type streamChunk struct {
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason,omitempty"`
 	} `json:"choices"`
+	// Usage 仅 stream_options.include_usage 开启时在流末尾的 chunk 携带
+	// （该 chunk choices 为空）。预算校准用 prompt_tokens。
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 const (
@@ -59,7 +62,11 @@ const (
 //  1. idleTimeout：每次成功读取后重置的"读空闲超时"；
 //  2. ctx：streamCtx 继承调用方 ctx，外部取消仍可立即中断。
 func (c *Client) Stream(ctx context.Context, req *ChatRequest, cbs StreamCallbacks) error {
-	body, err := json.Marshal(chatPayload{ChatRequest: *req, Stream: true})
+	body, err := json.Marshal(chatPayload{
+		ChatRequest:   *req,
+		Stream:        true,
+		StreamOptions: &StreamOptions{IncludeUsage: true}, // 流末尾返回 usage，供预算校准
+	})
 	if err != nil {
 		return fmt.Errorf("provider: marshal request: %w", err)
 	}
@@ -126,6 +133,12 @@ func (c *Client) Stream(ctx context.Context, req *ChatRequest, cbs StreamCallbac
 		var chunk streamChunk
 		if err := json.Unmarshal(payload, &chunk); err != nil {
 			return fmt.Errorf("provider: parse stream chunk: %w", err)
+		}
+		// usage chunk：choices 为空、仅携带用量，先于内容回调处理。
+		if chunk.Usage != nil && cbs.OnUsage != nil {
+			if err := cbs.OnUsage(*chunk.Usage); err != nil {
+				return fmt.Errorf("provider: OnUsage: %w", err)
+			}
 		}
 		for _, choice := range chunk.Choices {
 			if d := choice.Delta.ReasoningContent; d != "" && cbs.OnThinking != nil {
