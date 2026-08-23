@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 
+	"small/internal/session"
 	"small/internal/tool"
 )
 
@@ -62,11 +63,15 @@ var _ Completer = (*providerChat)(nil)
 const maxToolRounds = 8
 
 // Agent 持有对话历史并驱动多轮循环：每调用一次 Run 完成一轮 user→assistant。
+// store/sid 非空时启用会话持久化：Run 成功结束自动把本轮新增历史追加落盘（见 persist.go）。
 type Agent struct {
-	chat    Completer
-	system  string
-	history []Turn
-	tools   *tool.Registry // 为 nil 时工具调用不可用，退化为纯对话
+	chat      Completer
+	system    string
+	history   []Turn
+	tools     *tool.Registry // 为 nil 时工具调用不可用，退化为纯对话
+	store     *session.Store // 为 nil 时不做持久化（纯对话）
+	sid       string         // 当前会话 id；仅 store 非 nil 且 sid 非空时生效
+	persisted int            // 已落盘的历史条数（恢复/注入初始历史后=len(history)）
 }
 
 // Option 以函数式选项配置 Agent。
@@ -77,10 +82,26 @@ func WithSystemPrompt(p string) Option {
 	return func(a *Agent) { a.system = p }
 }
 
-// New 构造 Agent。结构协作对象以显式参数注入（chat、tools），便于测试时替换 mock；
-// tools 为 nil 时退化为纯对话（模型不会收到工具声明）。行为开关走 Option。
-func New(chat Completer, tools *tool.Registry, opts ...Option) *Agent {
-	a := &Agent{chat: chat, tools: tools}
+// WithSession 启用会话持久化并绑定会话 id：Run 成功后自动把新增历史追加到 store。
+// store 为 nil 时忽略（纯对话不受影响）。恢复历史由组合根 Load 后经 WithHistory 注入，
+// 因为 New 不返回 error，而文件读取是系统边界，错误应在组合根处理。
+func WithSession(id string) Option {
+	return func(a *Agent) { a.sid = id }
+}
+
+// WithHistory 注入初始历史（启动恢复用），此后 Run 只追加新增部分。
+// 传入切片会拷贝，防止外部篡改内部状态；未启用持久化时同样有效（纯内存恢复）。
+func WithHistory(turns []Turn) Option {
+	return func(a *Agent) {
+		a.history = append([]Turn(nil), turns...)
+		a.persisted = len(a.history)
+	}
+}
+
+// New 构造 Agent。结构协作对象以显式参数注入（chat、tools、store），便于测试时替换 mock；
+// tools 为 nil 时退化为纯对话，store 为 nil 时不做持久化。行为开关走 Option。
+func New(chat Completer, tools *tool.Registry, store *session.Store, opts ...Option) *Agent {
+	a := &Agent{chat: chat, tools: tools, store: store}
 	for _, o := range opts {
 		o(a)
 	}
@@ -107,6 +128,10 @@ func (a *Agent) Run(ctx context.Context, userInput string) (Result, error) {
 
 		if len(result.ToolCalls) == 0 {
 			a.history = append(a.history, Turn{Role: "assistant", Content: result.Reply})
+			if err := a.persistRun(); err != nil {
+				// 持久化失败必须透传：调用方以为已保存，实际未落盘，不能静默。
+				return Result{}, err
+			}
 			return result, nil
 		}
 		if a.tools == nil {
@@ -142,9 +167,15 @@ func (a *Agent) History() []Turn {
 	return out
 }
 
-// Reset 清空对话历史（系统提示保留）。
-func (a *Agent) Reset() {
+// Reset 清空对话历史（系统提示保留）。启用持久化时同步删除会话文件，
+// 否则下次追加会与盘上旧数据重复。
+func (a *Agent) Reset() error {
 	a.history = a.history[:0]
+	a.persisted = 0
+	if a.store != nil && a.sid != "" {
+		return a.store.Delete(a.sid)
+	}
+	return nil
 }
 
 // allTurns 返回包含系统提示在内的完整历史（拷贝）。

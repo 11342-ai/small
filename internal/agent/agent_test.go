@@ -60,7 +60,7 @@ func toolCall(id, name, args string) ToolCall {
 
 func TestAgent_RunPlainChat(t *testing.T) {
 	script := &scriptCompleter{results: []Result{{Reply: "hi back", Thinking: "secret"}}}
-	a := New(script, nil, WithSystemPrompt("sys"))
+	a := New(script, nil, nil, WithSystemPrompt("sys"))
 
 	result, err := a.Run(context.Background(), "hello")
 	if err != nil {
@@ -101,7 +101,7 @@ func TestAgent_RunToolLoop(t *testing.T) {
 		{ToolCalls: []ToolCall{toolCall("c1", "echo", `{"v":"hello"}`)}},
 		{Reply: "done"},
 	}}
-	a := New(script, reg, WithSystemPrompt("sys"))
+	a := New(script, reg, nil, WithSystemPrompt("sys"))
 
 	result, err := a.Run(context.Background(), "hi")
 	if err != nil {
@@ -137,7 +137,7 @@ func TestAgent_RunUnknownToolFallsBack(t *testing.T) {
 		{ToolCalls: []ToolCall{toolCall("c9", "ghost", "{}")}},
 		{Reply: "recovered"},
 	}}
-	a := New(script, reg)
+	a := New(script, reg, nil)
 
 	result, err := a.Run(context.Background(), "hi")
 	if err != nil {
@@ -161,7 +161,7 @@ func TestAgent_RunToolFrameworkErrorAborts(t *testing.T) {
 	script := &scriptCompleter{results: []Result{
 		{ToolCalls: []ToolCall{toolCall("c1", "boom", "{}")}},
 	}}
-	a := New(script, reg)
+	a := New(script, reg, nil)
 
 	_, err := a.Run(context.Background(), "hi")
 	if err == nil || !strings.Contains(err.Error(), "boom") {
@@ -177,7 +177,7 @@ func TestAgent_RunWithoutToolsErrors(t *testing.T) {
 	script := &scriptCompleter{results: []Result{
 		{ToolCalls: []ToolCall{toolCall("c1", "echo", "{}")}},
 	}}
-	a := New(script, nil) // 未注册工具，模型请求时应报错
+	a := New(script, nil, nil) // 未注册工具，模型请求时应报错
 
 	_, err := a.Run(context.Background(), "hi")
 	if err == nil || !strings.Contains(err.Error(), "no tools registered") {
@@ -196,7 +196,7 @@ func TestAgent_RunExceedsMaxRounds(t *testing.T) {
 		results[i] = Result{ToolCalls: []ToolCall{toolCall("c", "echo", `{"v":"x"}`)}}
 	}
 	script := &scriptCompleter{results: results}
-	a := New(script, reg)
+	a := New(script, reg, nil)
 
 	_, err := a.Run(context.Background(), "hi")
 	if err == nil || !strings.Contains(err.Error(), "exceeded 8 tool rounds") {
@@ -209,7 +209,7 @@ func TestAgent_RunExceedsMaxRounds(t *testing.T) {
 
 func TestAgent_RunHistoryAccumulatesAcrossRuns(t *testing.T) {
 	script := &scriptCompleter{results: []Result{{Reply: "one"}, {Reply: "two"}}}
-	a := New(script, nil)
+	a := New(script, nil, nil)
 
 	if _, err := a.Run(context.Background(), "first"); err != nil {
 		t.Fatalf("run 1: %v", err)

@@ -8,9 +8,11 @@
 small/
 ├── main.go                 # 组合根：装配全部依赖 + 多轮对话 demo
 ├── internal/
-│   ├── config/             # 配置：环境变量集中加载，构造注入下游
+│   ├── config/             # 配置：环境变量优先 + 可选 config.yml，构造注入下游
 │   ├── provider/           # 传输层：DeepSeek HTTP/SSE 调用、重试、超时（含 retry 子包）
-│   └── agent/              # 领域层：多轮对话循环/历史；adapter.go 负责与 provider 的翻译
+│   ├── agent/              # 领域层：多轮对话循环/历史/自动持久化；adapter.go 翻译 provider
+│   ├── session/            # 会话持久化：JSONL 每会话一文件，agent 的存储部件
+│   └── tool/               # 工具：声明/执行/注册（Registry）+ 内置工具（builtin）
 └── Zoo/                    # 设计文档、约定、踩坑记录
 ```
 
@@ -21,7 +23,29 @@ go build ./...                      # 编译
 go vet ./...                        # 静态检查
 go test ./... -count=1 -race        # 测试（必须过 race）
 gofmt -l .                          # 格式检查（无输出为干净）
-go run .                            # 运行（需 DEEPSEEK_API_KEY / DEEPSEEK_MODEL）
+```
+
+### CLI 会话对话（多轮，自动持久化）
+
+语法：`go run . [--session <id>]`
+
+| 参数 | 含义 | 缺省 |
+|---|---|---|
+| `--session <id>` | 会话 ID：恢复/续聊该会话，不存在则新建 | 时间戳新会话（如 `20260823-153045`） |
+
+| 环境变量 | 含义 | 缺省 |
+|---|---|---|
+| `DEEPSEEK_API_KEY` | 鉴权密钥（必填） | 无 |
+| `DEEPSEEK_MODEL` | 模型名 | `deepseek-v4-pro` |
+| `SMALL_SESSION_DIR` | 会话存储目录 | `~/.small/sessions` |
+| `SMALL_CONFIG` | 配置文件路径 | `~/.small/config.yml` |
+
+示例：
+
+```bash
+go run . --session mychat          # 开始/续聊会话 mychat（聊几句后输入 exit 退出）
+go run . --session mychat          # 再次进入，上下文还在
+cat ~/.small/sessions/mychat.jsonl # 落盘文件人读可查（JSONL，一行一条消息）
 ```
 
 ## 代码风格与约定
@@ -36,11 +60,12 @@ go run .                            # 运行（需 DEEPSEEK_API_KEY / DEEPSEEK_M
 
 ## 架构与模块边界
 
-- **依赖严格单向**：`main → agent → provider → config`，`provider → retry`（子包）。禁止反向/循环依赖。
+- **依赖严格单向**：`main → agent → provider → config`，`agent → session`，`agent → tool`，`provider → retry`（子包）。禁止反向/循环依赖。
 - **职责边界**：
   - `provider`（传输层）：只做 HTTP 语义，不感知业务。
-  - `agent`（领域层）：只管循环/历史，不感知 provider DTO。
+  - `agent`（领域层）：只管循环/历史/自动持久化，不感知 provider DTO。
   - `adapter.go`（隔离点）：**全项目唯一** import provider 的 agent 文件，翻译 `Turn↔Message`、探测流式。
+  - `session`（存储部件）：不 import agent（避免循环），自持 `Message` 模型，`Turn↔Message` 翻译在 agent 的 `persist.go`。
   - `config`：集中配置，构造注入。
 - **internal/ 语义**：应用非库，内部实现不对外导出；`retry` 扁平放在 `provider/retry`（不套 internal 嵌套）。
 
@@ -65,5 +90,8 @@ go run .                            # 运行（需 DEEPSEEK_API_KEY / DEEPSEEK_M
 | 重试状态码 | 408/429/5xx（529 属 5xx） | 529 是 Cloudflare 私有扩展码 |
 | adapter 参数 | `provider.Completer` 接口 | 降级探测要求字段多态（功能决定形态） |
 | 工具注入形态 | 结构依赖显式入参（agent 收注册表、adapter 收冻结声明），行为开关走 Option | 构造契约可见协作对象；配置类开关不破签名 |
+| 会话持久化 | JSONL 每会话一文件 + Run 成功自动 append（不引 SQLite） | 零依赖、崩溃只丢半行、续聊场景够用；要查询再迁 |
+| 会话恢复 | 组合根 `store.Load` + `WithHistory` 注入 | New 不返回 error，文件错误属系统边界，组合根 fail fast |
+| 配置来源 | 环境变量优先 + 可选 `~/.small/config.yml`（yaml.v3）；机密只走环境变量 | 配置项增长后可持久化，API key 不落配置文件 |
 | 输出形态 | `Result{Reply, Thinking}` struct | 类型安全、可扩展 |
 | thinking | `WithThinking` 默认关 | 显式开启才付代价 |
