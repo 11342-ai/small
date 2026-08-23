@@ -12,6 +12,7 @@ small/
 │   ├── provider/           # 传输层：DeepSeek HTTP/SSE 调用、重试、超时（含 retry 子包）
 │   ├── agent/              # 领域层：多轮对话循环/历史/自动持久化/预算截断；adapter.go 翻译 provider
 │   ├── session/            # 会话持久化：JSONL 每会话一文件，agent 的存储部件
+│   ├── memory/             # 长期记忆：Markdown 文件 + bigram 关键词索引 + 归档层受控追加，存储部件
 │   └── tool/               # 工具：声明/执行/注册（Registry）+ 内置工具（builtin）
 └── Zoo/                    # 设计文档、约定、踩坑记录
 ```
@@ -38,6 +39,7 @@ gofmt -l .                          # 格式检查（无输出为干净）
 | `DEEPSEEK_API_KEY` | 鉴权密钥（必填） | 无 |
 | `DEEPSEEK_MODEL` | 模型名 | `deepseek-v4-pro` |
 | `SMALL_SESSION_DIR` | 会话存储目录 | `~/.small/sessions` |
+| `SMALL_MEMORY_DIR` | 长期记忆目录（`MEMORY.md` + `memory/*.md`） | `~/.small/memory` |
 | `SMALL_CONFIG` | 配置文件路径 | `~/.small/config.yml` |
 | `SMALL_MAX_TOKENS` | 上下文预算（估算 token，显式 `0` 禁用截断） | `8000` |
 
@@ -66,12 +68,13 @@ cloc . --by-file --not-match-f='_test\.go$'                 # 逐文件明细
 
 ## 架构与模块边界
 
-- **依赖严格单向**：`main → agent → provider → config`，`agent → session`，`agent → tool`，`provider → retry`（子包）。禁止反向/循环依赖。
+- **依赖严格单向**：`main → agent → provider → config`，`agent → session`，`agent → tool`，`provider → retry`（子包），`tool/builtin → memory`（叶子）。禁止反向/循环依赖。
 - **职责边界**：
   - `provider`（传输层）：只做 HTTP 语义，不感知业务。
   - `agent`（领域层）：只管循环/历史/自动持久化，不感知 provider DTO。
   - `adapter.go`（隔离点）：**全项目唯一** import provider 的 agent 文件，翻译 `Turn↔Message`、探测流式。
   - `session`（存储部件）：不 import agent（避免循环），自持 `Message` 模型，`Turn↔Message` 翻译在 agent 的 `persist.go`。
+  - `memory`（存储部件）：bigram 关键词检索 Markdown 记忆文件，不 import 任何内部包；写入双层——`MEMORY.md` 人手维护、归档层 `memory/*.md` 可经 `Append` 受控追加（锁死只写归档层）。
   - `config`：集中配置，构造注入。
 - **internal/ 语义**：应用非库，内部实现不对外导出；`retry` 扁平放在 `provider/retry`（不套 internal 嵌套）。
 
@@ -82,7 +85,8 @@ cloc . --by-file --not-match-f='_test\.go$'                 # 逐文件明细
 3. **流式"拿到 2xx 后绝不重试"**——否则重复已吐出的 token。
 4. **流中失败不回退非流式**（adapter 层同样）——失败只能透传错误，由调用方重试整个对话。
 5. API key 等机密**绝不入库**（提交前 grep 检查）。
-6. 合并门槛：`go test -race ./...`、`go vet`、`gofmt` 全绿。
+6. `builtin` 生产代码只允许 import `tool`/`memory`，**不得反向依赖** `agent`/`session`/`provider`/`config`（`imports_test.go` 固化；测试文件不受限，可自由 import 做集成验证）。
+7. 合并门槛：`go test -race ./...`、`go vet`、`gofmt` 全绿。
 
 ## 重要决策与取舍
 
@@ -102,3 +106,6 @@ cloc . --by-file --not-match-f='_test\.go$'                 # 逐文件明细
 | 上下文压缩 | 第一版只做"预算截断 + 真实 usage 校准"（`WithTokenBudget`），摘要后续增强 | 真实 usage（流式 `include_usage`）优先、字符估算兜底；截断同步重写（Rewrite）防"复活" |
 | 输出形态 | `Result{Reply, Thinking}` struct | 类型安全、可扩展 |
 | thinking | `WithThinking` 默认关 | 显式开启才付代价 |
+| 记忆存储 | Markdown 文件 + bigram 关键词索引（零依赖） | 中文无空格必须分词，bigram 免词表；语料量级不到，不上向量/SQLite FTS5 |
+| 记忆访问 | 双轨：`MEMORY.md` 启动注入 + `memory_search`/`memory_get` 工具按需检索 | 模型不会自觉想起检索，注入兜高频事实；按需检索省常驻 token |
+| 记忆写入 | 双层：`MEMORY.md` 人手维护 + `memory_save` 只写归档层（仅用户显式要求时触发） | 模型写的进"搜索池"不污染常驻上下文；去重/事实性风险由触发约束缓释 |

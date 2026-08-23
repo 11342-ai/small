@@ -13,11 +13,13 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"small/internal/agent"
 	"small/internal/config"
+	"small/internal/memory"
 	"small/internal/provider"
 	"small/internal/session"
 	"small/internal/tool"
@@ -53,9 +55,22 @@ func main() {
 	}
 
 	client := provider.New(cfg)
+	mem, err := memory.New(cfg.MemoryDir)
+	if err != nil {
+		log.Fatalf("memory store: %v", err)
+	}
 	reg := tool.New()
-	if err := builtin.RegisterBuiltins(reg); err != nil {
+	if err := builtin.RegisterBuiltins(reg, mem); err != nil {
 		log.Fatalf("register builtin tools: %v", err)
+	}
+	// 系统提示 = 基础行为 + 记忆启动注入（MEMORY.md 常驻层，见 Zoo/model/memory.md §7）。
+	// 组合根拼字符串即可，agent 循环零改动。
+	prompt := "你是一个简洁的助手，回答尽量控制在三句话以内。" +
+		"可用工具：echo（原样返回文本）、memory_search（检索长期记忆）、memory_get（读取记忆块）、memory_save（记住新事实）。" +
+		"回答涉及先前决策、偏好、待办或项目事实时，先调用 memory_search 检索；" +
+		"仅当用户明确要求记住某事时，才调用 memory_save 写入长期记忆。"
+	if boot := loadBootstrapMemory(cfg.MemoryDir); boot != "" {
+		prompt += "\n\n<memory>\n" + boot + "\n</memory>"
 	}
 	a := agent.New(
 		agent.NewProviderChat(client, cfg.Model, reg.List(),
@@ -63,7 +78,7 @@ func main() {
 		),
 		reg,
 		store,
-		agent.WithSystemPrompt("你是一个简洁的助手，回答尽量控制在三句话以内。可用工具：echo（原样返回文本）。"),
+		agent.WithSystemPrompt(prompt),
 		agent.WithSession(id),
 		agent.WithHistory(agent.FromSession(msgs)),
 		agent.WithTokenBudget(cfg.MaxTokens),
@@ -94,4 +109,26 @@ func main() {
 	if err := scanner.Err(); err != nil {
 		log.Fatalf("read stdin: %v", err)
 	}
+}
+
+// bootstrapLimit MEMORY.md 启动注入的上限（字符数）：防常驻 token 膨胀。
+// 完整内容仍可通过 memory_search 检索（设计文档 §7）。
+const bootstrapLimit = 2000
+
+// loadBootstrapMemory 读取 MEMORY.md 作为启动注入内容；文件不存在或不可读
+// 返回空（无常驻记忆不阻塞启动），超限按字符截断并注明（只截注入副本，不动文件本体）。
+func loadBootstrapMemory(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, "MEMORY.md"))
+	if err != nil {
+		return ""
+	}
+	s := strings.TrimSpace(string(data))
+	if s == "" {
+		return ""
+	}
+	// 按 rune 截断而非字节：字节切分可能把中文字符拦腰截断成非法 UTF-8。
+	if runes := []rune(s); len(runes) > bootstrapLimit {
+		s = string(runes[:bootstrapLimit]) + "\n（已截断，完整内容可用 memory_search 检索）"
+	}
+	return s
 }
