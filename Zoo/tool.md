@@ -36,7 +36,7 @@ main(组合根) → agent → tool
 ### 2.3 注册表（Registry）—— 模块对象
 
 - 内容：**名称 → 工具** 的映射容器，通过 `New()` 创建（与 `config.Load` / `provider.New` / `agent.New` 的构造风格一致），是组合根与 agent 循环拿到的"模块对象"。
-- 能力：注册（重名报错）、按名查找、列出全部（**顺序稳定**，供序列化成 tools 数组）。
+- 能力：注册（重名报错）、**批量注册（`RegisterAll`，遇错即止）**、按名查找、列出全部（**顺序稳定**，供序列化成 tools 数组）。
 - 并发：当前组合根一次性装配、循环期只读，不加并发锁；以注释约定"注册只发生在启动期"。若未来出现动态注册（如运行时接 MCP 工具），再补锁。
 
 ## 3. 边界划分（四条约定）
@@ -155,6 +155,8 @@ main(组合根) → agent → tool
 - adapter 负责声明与调用记录的翻译（延续隔离点约定）；
 - agent 循环变为：调用 → 若模型请求了工具则执行并回灌 → 再调用，直到不再请求工具。
 - 不支持工具的后端沿用现有"探测 + 降级"模式，退化为纯对话。
+- **接线形态（结构依赖显式入参）**：`agent.New(chat, reg, opts...)` 收活注册表（执行调用）；adapter `NewProviderChat(client, model, specs, opts...)` 收冻结声明（`reg.List()`，只序列化不执行）；行为开关（thinking 等）走 Option。`tools`/`specs` 传 nil 即退化为纯对话。
+- **权责分离（内置清单集中持有）**：内置工具的清单由 `builtin.RegisterBuiltins(reg)` 集中注册（底层走 `Registry.RegisterAll` 批量原语）——新增内置工具只在 builtin 包追加一个元素，组合根（main）不改一行；组合根只调用注册入口，不逐个枚举工具。命名上 `RegisterBuiltins` 与 `Registry.RegisterAll` 区分：前者是"注册全部内置工具"的入口，后者是批量原语。
 
 ## 8. 待决问题
 

@@ -60,6 +60,36 @@ func TestRegistry_RegisterErrors(t *testing.T) {
 	})
 }
 
+func TestRegistry_RegisterAll(t *testing.T) {
+	t.Run("registers all", func(t *testing.T) {
+		reg := New()
+		if err := reg.RegisterAll(fakeTool("a"), fakeTool("b"), fakeTool("c")); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		for _, name := range []string{"a", "b", "c"} {
+			if _, ok := reg.Get(name); !ok {
+				t.Errorf("tool %q not registered", name)
+			}
+		}
+	})
+
+	t.Run("aborts on duplicate, partial state kept", func(t *testing.T) {
+		reg := New()
+		if err := reg.Register(fakeTool("dup")); err != nil {
+			t.Fatalf("first register: %v", err)
+		}
+		if err := reg.RegisterAll(fakeTool("ok"), fakeTool("dup"), fakeTool("never")); err == nil {
+			t.Fatal("want duplicate error, got nil")
+		}
+		if _, ok := reg.Get("ok"); !ok {
+			t.Error("tools before the failure stay registered")
+		}
+		if _, ok := reg.Get("never"); ok {
+			t.Error("tools after the failure must not be registered")
+		}
+	})
+}
+
 func TestRegistry_GetMissing(t *testing.T) {
 	reg := New()
 	if _, ok := reg.Get("nope"); ok {

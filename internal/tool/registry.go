@@ -34,6 +34,17 @@ func (r *Registry) Register(t Tool) error {
 	return nil
 }
 
+// RegisterAll 批量注册，遇错立即中止（此前已注册的保持已注册状态）。
+// 供组合根/内置清单集中注册；失败即由调用方决定退出，残留的部分注册无实际影响。
+func (r *Registry) RegisterAll(ts ...Tool) error {
+	for _, t := range ts {
+		if err := r.Register(t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Get 按名查找工具，未命中返回 false（comma-ok 惯例）。
 func (r *Registry) Get(name string) (Tool, bool) {
 	t, ok := r.tools[name]

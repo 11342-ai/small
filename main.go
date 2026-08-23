@@ -29,11 +29,12 @@ func main() {
 
 	// 2. 装配：provider.Client → 适配器 → Agent，依赖全部在组合根注入。
 	//    WithThinking(true)：开启思考模式，让 Result.Thinking 携带推理过程。
-	//    结构协作对象显式入参：adapter 收冻结的声明（reg.List()），agent 收注册表执行调用。
+	//    内置工具清单由 builtin.RegisterBuiltins 集中注册（新增工具不改这里），
+	//    adapter 收冻结的声明（reg.List()），agent 收注册表执行调用。
 	client := provider.New(cfg)
 	reg := tool.New()
-	if err := reg.Register(builtin.Echo()); err != nil {
-		log.Fatalf("register tool: %v", err)
+	if err := builtin.RegisterBuiltins(reg); err != nil {
+		log.Fatalf("register builtin tools: %v", err)
 	}
 	a := agent.New(
 		agent.NewProviderChat(client, cfg.Model, reg.List(),
