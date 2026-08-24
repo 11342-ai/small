@@ -58,6 +58,35 @@ func toolCall(id, name, args string) ToolCall {
 
 // ---- 纯对话（无工具） ----
 
+func TestAgent_RunToolObserver(t *testing.T) {
+	reg := tool.New()
+	if err := reg.Register(scriptTool()); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	script := &scriptCompleter{results: []Result{
+		{ToolCalls: []ToolCall{toolCall("c1", "echo", `{"v":"hello"}`)}},
+		{Reply: "done"},
+	}}
+	var events []ToolCallEvent
+	a := New(script, reg, nil, WithSystemPrompt("sys"), WithToolObserver(func(ev ToolCallEvent) {
+		events = append(events, ev)
+	}))
+
+	if _, err := a.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// 只实际执行了 echo 一次：应恰好一个事件，且携带名称/入参/结果。
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1（未注入时无事件）", len(events))
+	}
+	if events[0].Name != "echo" || events[0].Args != `{"v":"hello"}` {
+		t.Errorf("event = %+v, want echo call with args", events[0])
+	}
+	if events[0].Result.Data != "hello" || events[0].Result.IsError {
+		t.Errorf("event result = %+v, want echo output", events[0].Result)
+	}
+}
+
 func TestAgent_RunPlainChat(t *testing.T) {
 	script := &scriptCompleter{results: []Result{{Reply: "hi back", Thinking: "secret"}}}
 	a := New(script, nil, nil, WithSystemPrompt("sys"))

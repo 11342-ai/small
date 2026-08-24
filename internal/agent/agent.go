@@ -59,6 +59,20 @@ type Result struct {
 	PromptTokens int
 }
 
+// ToolCallEvent 一次工具调用的观测事件，供展示层实时渲染（工具名/入参/结果）。
+type ToolCallEvent struct {
+	// Name 工具名。
+	Name string
+	// Args 参数原始 JSON（模型传参，原样呈现）。
+	Args string
+	// Result 执行结果（Data + IsError），含业务失败标记。
+	Result tool.Result
+}
+
+// ToolObserver 工具调用观察者：Run 在每次工具实际执行后回调。
+// 可注入展示层（实时打印）或打点器；nil 时不触发——调用方不注入则完全无感知。
+type ToolObserver func(ToolCallEvent)
+
 // 编译期断言：确保适配器在编译期满足端口（实现见 adapter.go）。
 var _ Completer = (*providerChat)(nil)
 
@@ -79,6 +93,7 @@ type Agent struct {
 	budget      int            // 估算 token 预算；<=0 不启用截断
 	baseline    int            // 最近一次 Complete 的真实 prompt_tokens（usage）；0 表示无基线
 	baselineLen int            // 基线对应的历史长度（Complete 返回瞬间 len(history)）
+	observe     ToolObserver   // 工具调用观察者；nil 时不触发（nil-safe 回调约定）
 }
 
 // Option 以函数式选项配置 Agent。
@@ -109,6 +124,12 @@ func WithHistory(turns []Turn) Option {
 // 超预算则从头部截断历史（system 与最近一轮保留）。<=0 表示不启用（默认）。
 func WithTokenBudget(maxTokens int) Option {
 	return func(a *Agent) { a.budget = maxTokens }
+}
+
+// WithToolObserver 注入工具调用观察者：每次工具实际执行后回调
+// （名称/参数/结果，供展示层实时渲染）。传 nil 则等同不注入（默认行为不变）。
+func WithToolObserver(obs ToolObserver) Option {
+	return func(a *Agent) { a.observe = obs }
 }
 
 // New 构造 Agent。结构协作对象以显式参数注入（chat、tools、store），便于测试时替换 mock；
@@ -176,6 +197,10 @@ func (a *Agent) Run(ctx context.Context, userInput string) (Result, error) {
 			if err != nil {
 				// 框架级错误（契约破坏等）：中止循环并透传。
 				return Result{}, fmt.Errorf("agent: execute tool %q: %w", call.Name, err)
+			}
+			// 执行成功才观测：事件含名称/入参/结果，展示层据此实时渲染（nil-safe）。
+			if a.observe != nil {
+				a.observe(ToolCallEvent{Name: call.Name, Args: call.Args, Result: res})
 			}
 			a.history = append(a.history, Turn{Role: "tool", ToolCallID: call.ID, Content: res.Data})
 		}

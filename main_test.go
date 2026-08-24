@@ -46,3 +46,20 @@ func TestLoadBootstrapMemory(t *testing.T) {
 		t.Errorf("truncated note missing: %q", got)
 	}
 }
+
+func TestTruncate(t *testing.T) {
+	cases := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"短文本", 10, "短文本"},             // 不超限：原样
+		{"中文字符串测试截断", 4, "中文字符…（已截断）"}, // 超限：按 rune 截断 + 标注
+		{"", 5, ""}, // 空串
+	}
+	for _, c := range cases {
+		if got := truncate(c.in, c.n); got != c.want {
+			t.Errorf("truncate(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
+	}
+}

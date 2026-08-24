@@ -82,6 +82,15 @@ func main() {
 		agent.WithSession(id),
 		agent.WithHistory(agent.FromSession(msgs)),
 		agent.WithTokenBudget(cfg.MaxTokens),
+		// 工具调用实时展示：逐条打印名称/入参/结果（截断摘要，防长结果刷屏）。
+		agent.WithToolObserver(func(ev agent.ToolCallEvent) {
+			fmt.Printf("→ %s(%s)\n", ev.Name, truncate(ev.Args, 120))
+			mark := ""
+			if ev.Result.IsError {
+				mark = " [失败]"
+			}
+			fmt.Printf("  ↳ %s%s\n", truncate(ev.Result.Data, 200), mark)
+		}),
 	)
 
 	// 3. 多轮对话循环：stdin 逐行输入，"exit" 退出。
@@ -131,4 +140,13 @@ func loadBootstrapMemory(dir string) string {
 		s = string(runes[:bootstrapLimit]) + "\n（已截断，完整内容可用 memory_search 检索）"
 	}
 	return s
+}
+
+// truncate 超长文本按 rune 截断为摘要，供工具调用实时展示防刷屏（尾部注明已截断）。
+func truncate(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n]) + "…（已截断）"
 }

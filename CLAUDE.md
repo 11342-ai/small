@@ -109,3 +109,4 @@ cloc . --by-file --not-match-f='_test\.go$'                 # 逐文件明细
 | 记忆存储 | Markdown 文件 + bigram 关键词索引（零依赖） | 中文无空格必须分词，bigram 免词表；语料量级不到，不上向量/SQLite FTS5 |
 | 记忆访问 | 双轨：`MEMORY.md` 启动注入 + `memory_search`/`memory_get` 工具按需检索 | 模型不会自觉想起检索，注入兜高频事实；按需检索省常驻 token |
 | 记忆写入 | 双层：`MEMORY.md` 人手维护 + `memory_save` 只写归档层（仅用户显式要求时触发） | 模型写的进"搜索池"不污染常驻上下文；去重/事实性风险由触发约束缓释 |
+| 工具观测 | `WithToolObserver` 回调（nil-safe），Run 每实际执行一个工具触发一次（名称/入参/结果） | 展示层实时渲染，不改循环逻辑；将来"工具轨迹"可复用同一事件源 |
