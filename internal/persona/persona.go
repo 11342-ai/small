@@ -34,6 +34,18 @@ type Persona struct {
 	Description string
 	// SystemPrompt 人格正文（frontmatter 之后的正文），组合根拼进 system。
 	SystemPrompt string
+	// FirstMessage 可选：开场白，首次回复以此为开场（二次元/御姐类人格用）。
+	FirstMessage string
+	// Examples 可选：few-shot 示范对，提升人格一致性；缺省为零回归。
+	Examples []Example
+}
+
+// Example 一组 few-shot 示范对（风格参考，非模板照抄）。
+type Example struct {
+	// User 用户一方的示范输入。
+	User string
+	// Assistant 模型一方的示范输出（体现该人格的口吻）。
+	Assistant string
 }
 
 // Manager 人格集合：Load 后只读、无状态，无需锁（-race 干净）。
@@ -87,8 +99,10 @@ func load(fsys fs.FS) (*Manager, error) {
 func parsePersona(fileName string, data []byte) (Persona, error) {
 	s := strings.TrimSpace(string(data))
 	var meta struct {
-		Name        string `yaml:"name"`
-		Description string `yaml:"description"`
+		Name         string    `yaml:"name"`
+		Description  string    `yaml:"description"`
+		FirstMessage string    `yaml:"first_message"`
+		Examples     []Example `yaml:"examples"`
 	}
 	body := s
 	if strings.HasPrefix(s, "---") {
@@ -113,7 +127,13 @@ func parsePersona(fileName string, data []byte) (Persona, error) {
 	if strings.TrimSpace(body) == "" {
 		return Persona{}, errors.New("empty system prompt body")
 	}
-	return Persona{Name: name, Description: meta.Description, SystemPrompt: body}, nil
+	return Persona{
+		Name:         name,
+		Description:  meta.Description,
+		SystemPrompt: body,
+		FirstMessage: meta.FirstMessage,
+		Examples:     meta.Examples,
+	}, nil
 }
 
 // Get 按名查找；未命中返回业务错误并附可用列表（提示拼写错误）。
@@ -136,4 +156,39 @@ func (m *Manager) List() []Persona {
 // Default 返回默认人格（default.md，Load 已保证存在）。
 func (m *Manager) Default() Persona {
 	return m.personas["default"]
+}
+
+// Compose 拼装三段式 system prompt（唯一装配入口，见设计文档 §4）：
+//  1. 契约层 base：工具/记忆规则，人格无关（组合根提供）；
+//  2. 人格层 p：SystemPrompt → FirstMessage（开场白）→ Examples（few-shot 示范）；
+//  3. 记忆层 memory：启动注入的常驻记忆（可选）。
+//
+// 全部新字段可选：缺省时输出与只拼 SystemPrompt 的旧手拼**逐字节一致**（零回归）。
+// 各层之间空行分隔，层内非空段落顺序固定。
+func Compose(base string, p Persona, memory string) string {
+	var b strings.Builder
+	b.WriteString(base)
+	writeSegment := func(s string) {
+		if strings.TrimSpace(s) == "" {
+			return
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(s)
+	}
+	writeSegment(p.SystemPrompt)
+	writeSegment(p.FirstMessage)
+	if len(p.Examples) > 0 {
+		var ex strings.Builder
+		for i, e := range p.Examples {
+			if i > 0 {
+				ex.WriteString("\n\n")
+			}
+			fmt.Fprintf(&ex, "用户：%s\n你：%s", e.User, e.Assistant)
+		}
+		writeSegment(ex.String())
+	}
+	writeSegment(memory)
+	return b.String()
 }

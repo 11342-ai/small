@@ -120,3 +120,4 @@ cloc . --by-file --not-match-f='_test\.go$'                 # 逐文件明细
 | 人格来源 | `personas/*.md`（frontmatter + 正文）+ `go:embed` 编译期快照 | 人格是代码资产（对照 memory 是用户可编辑文件）；零运行时失败 |
 | 人格切换语义 | 一个对话一个人格（创建时定型，不中途切）；恢复以会话 meta 为准 | 缓存约束不成立（本项目规模收益可忽略）；旧人格回复留历史会串味 |
 | 会话 meta | JSONL 首行 `{"meta":{...}}`，旧文件兼容（无头行照常读），Rewrite 保头 | 记录人格绑定且不改消息行格式 |
+| 提示词装配 | `persona.Compose(base, p, memory)` 三段式唯一装配入口（契约→人格→记忆） | 字段（first_message/examples）缺省零回归；main 不再手拼 |

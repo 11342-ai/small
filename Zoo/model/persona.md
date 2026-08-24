@@ -72,15 +72,20 @@ frontmatter 格式：
 ---
 name: catton                          # 可选，缺省取文件名 stem
 description: 二次元元气少女，说话带颜文字和萌系语气词   # 可选，供 --persona 帮助/错误提示
+first_message: 喵~你好呀！                 # 可选：开场白，首次回复以此为开场（二次元/御姐类用）
+examples:                              # 可选：few-shot 示范对，提升人格一致性
+  - user: 你是谁？
+    assistant: 我是猫瞳喵~一个元气满满的二次元少女！
 ---
 
 你是猫瞳（catton），一个元气满满的二次元少女……
 （正文即 SystemPrompt，建议自包含："你是…语气…"，不引用工具/记忆——关注点分离）
 ```
 
-- **解析**：按首个 `---` 行切出 frontmatter 与正文；frontmatter 用 `yaml.v3`（复用 config 既有依赖，不新增）；正文 trim 后作为 `SystemPrompt`。
+- **解析**：按首个 `---` 行切出 frontmatter 与正文；frontmatter 用 `yaml.v3`（复用 config 既有依赖，不新增）；正文 trim 后作为 `SystemPrompt`。`first_message`/`examples` 均为可选字段，缺省时拼装结果与只有正文完全一致（零回归）。
 - **约束**：正文非空；name 冲突视为格式错误（组合根 fail fast）；**`default.md` 必须存在且正文非空**——它是默认兜底，缺失属开发错误，Load 时校验并报错（fail fast 早暴露，与"配置缺失即启动失败"的项目惯例一致）。
 - **budget 守门**：system 在截断逻辑中保留，persona 加长会挤占历史预算——人格正文建议 ≤1500 字符（对齐 memory 的 2KB 上限思路），测试守门。
+- **装配统合（三段式）**：`persona.Compose(base, p, memory)` 是**唯一**拼装入口——契约层（base：工具/记忆规则，人格无关）→ 人格层（SystemPrompt → FirstMessage → Examples）→ 记忆层（memory 启动注入）。main.go 不再手拼；字段缺省时输出与旧手拼逐字节一致。
 
 ## 5. 对外 API（模块对象，不接口化）
 
@@ -179,6 +184,7 @@ JSONL 首行记录会话人格，消息行格式不变：
 **阶段二（存储）**：session Header/Meta/WriteMeta/Rewrite 保头 + 兼容回归测试。
 **阶段三（装配）**：main.go flag + 优先级选择 + system 拼装 + 新建会话 WriteMeta + 集成测试。
 **阶段四（收尾）**：更新 `CLAUDE.md` 目录结构与决策表、`路线图.md` 勾选；手工 CLI 验证。
+**阶段五（字段细化 + 装配统合）**：Persona 加 `FirstMessage`/`Examples` + `Compose` 拼装入口 + catton/onee 示例字段；main.go 改用 Compose。
 
 ## 12. 需要补的知识（同频清单）
 
@@ -191,7 +197,7 @@ JSONL 首行记录会话人格，消息行格式不变：
 
 | 方向 | 手段 | 优缺点 | 取舍依据 |
 |---|---|---|---|
-| 人格文件化增强 | 角色卡字段：first_message、示例对话、禁忌话题 | +开场代入感、few-shot 一致性；−占 token、格式规范重 | 二次元/御姐类人格需要开场白，科学家/面试官不需要 → 有需求再加字段 |
+| 人格文件化增强 | 角色卡字段：first_message、示例对话、禁忌话题 | +开场代入感、few-shot 一致性；−占 token、格式规范重 | ✅ **已实现 first_message + examples**（见 §4）：字段可选、缺省零回归；禁忌话题未做（正文可自述） |
 | 人格组合/继承 | base + overlay（"御姐+科学家"） | +组合爆炸小；−每层占 token、一致性难调 | 当前人格数量少，直人格即够 |
 | 运行时目录加载 | `SMALL_PERSONA_DIR` 覆盖 embed | +用户可自配；−多一个运行时 IO 失败点、不再单二进制 | 出现"用户要自己写人格"的真实需求再评估 |
 | 人格一致性评估 | 固定测试集跑几个人格对比输出 | +可量化一致性；−成本 | 低优先级，CLI 场景收益有限 |

@@ -107,16 +107,17 @@ func main() {
 	if err := builtin.RegisterBuiltins(reg, mem); err != nil {
 		log.Fatalf("register builtin tools: %v", err)
 	}
-	// 系统提示 = 基础契约（工具/记忆规则，人格无关）+ 人格正文 + 记忆启动注入。
-	// 角色句（"你是一个简洁的助手…"）已移入 personas/default.md：选别的人格时
-	// 不继承"简洁"约束。组合根拼字符串即可，agent 循环零改动。
+	// 系统提示三段式装配（契约层→人格层→记忆层）收敛到 persona.Compose，main 只提供素材不手拼
+	// （见 Zoo/model/persona.md §4）。角色句（"你是一个简洁的助手…"）已移入 personas/default.md：
+	// 选别的人格时不继承"简洁"约束。组合根拼字符串即可，agent 循环零改动。
 	base := "可用工具：echo（原样返回文本）、memory_search（检索长期记忆）、memory_get（读取记忆块）、memory_save（记住新事实）。" +
 		"回答涉及先前决策、偏好、待办或项目事实时，先调用 memory_search 检索；" +
 		"仅当用户明确要求记住某事时，才调用 memory_save 写入长期记忆。"
-	prompt := base + "\n\n" + p.SystemPrompt
+	memBlock := ""
 	if boot := loadBootstrapMemory(cfg.MemoryDir); boot != "" {
-		prompt += "\n\n<memory>\n" + boot + "\n</memory>"
+		memBlock = "<memory>\n" + boot + "\n</memory>"
 	}
+	prompt := persona.Compose(base, p, memBlock)
 	fmt.Printf("人格: %s\n", p.Name)
 	a := agent.New(
 		agent.NewProviderChat(client, cfg.Model, reg.List(),
