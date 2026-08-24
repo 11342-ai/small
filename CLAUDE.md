@@ -13,6 +13,7 @@ small/
 │   ├── agent/              # 领域层：多轮对话循环/历史/自动持久化/预算截断；adapter.go 翻译 provider
 │   ├── session/            # 会话持久化：JSONL 每会话一文件，agent 的存储部件
 │   ├── memory/             # 长期记忆：Markdown 文件 + bigram 关键词索引 + 归档层受控追加，存储部件
+│   ├── persona/            # 人格：go:embed 内置人格文件（frontmatter + 正文），提示词源部件
 │   └── tool/               # 工具：声明/执行/注册（Registry）+ 内置工具（builtin）
 └── Zoo/                    # 设计文档、约定、踩坑记录
 ```
@@ -28,11 +29,17 @@ gofmt -l .                          # 格式检查（无输出为干净）
 
 ### CLI 会话对话（多轮，自动持久化）
 
-语法：`go run . [--session <id>]`
+语法：`go run . [--session <id>] [--persona <name>]`
+
+```text
+--persona <name>
+  - default / catton / scientist / onee / interviewer
+```
 
 | 参数 | 含义 | 缺省 |
 |---|---|---|
 | `--session <id>` | 会话 ID：恢复/续聊该会话，不存在则新建 | 时间戳新会话（如 `20260823-153045`） |
+| `--persona <name>` | 对话人格：仅对新建会话生效；恢复会话时以会话 meta 为准 | `default` |
 
 | 环境变量 | 含义 | 缺省 |
 |---|---|---|
@@ -110,3 +117,6 @@ cloc . --by-file --not-match-f='_test\.go$'                 # 逐文件明细
 | 记忆访问 | 双轨：`MEMORY.md` 启动注入 + `memory_search`/`memory_get` 工具按需检索 | 模型不会自觉想起检索，注入兜高频事实；按需检索省常驻 token |
 | 记忆写入 | 双层：`MEMORY.md` 人手维护 + `memory_save` 只写归档层（仅用户显式要求时触发） | 模型写的进"搜索池"不污染常驻上下文；去重/事实性风险由触发约束缓释 |
 | 工具观测 | `WithToolObserver` 回调（nil-safe），Run 每实际执行一个工具触发一次（名称/入参/结果） | 展示层实时渲染，不改循环逻辑；将来"工具轨迹"可复用同一事件源 |
+| 人格来源 | `personas/*.md`（frontmatter + 正文）+ `go:embed` 编译期快照 | 人格是代码资产（对照 memory 是用户可编辑文件）；零运行时失败 |
+| 人格切换语义 | 一个对话一个人格（创建时定型，不中途切）；恢复以会话 meta 为准 | 缓存约束不成立（本项目规模收益可忽略）；旧人格回复留历史会串味 |
+| 会话 meta | JSONL 首行 `{"meta":{...}}`，旧文件兼容（无头行照常读），Rewrite 保头 | 记录人格绑定且不改消息行格式 |

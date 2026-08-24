@@ -219,6 +219,105 @@ func TestStore_InvalidIDRejected(t *testing.T) {
 		if err := s.Delete(id); err == nil {
 			t.Errorf("Delete id %q: want error", id)
 		}
+		if err := s.WriteMeta(id, Header{}); err == nil {
+			t.Errorf("WriteMeta id %q: want error", id)
+		}
+		if _, err := s.Meta(id); err == nil {
+			t.Errorf("Meta id %q: want error", id)
+		}
+	}
+}
+
+func TestStore_MetaHeaderRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.WriteMeta("s1", Header{Meta: HeaderMeta{Persona: "catton"}}); err != nil {
+		t.Fatalf("WriteMeta: %v", err)
+	}
+	if err := s.Append("s1", []Message{{Role: "user", Content: "hi"}}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	h, err := s.Meta("s1")
+	if err != nil {
+		t.Fatalf("Meta: %v", err)
+	}
+	if h.Meta.Persona != "catton" {
+		t.Errorf("Meta = %+v, want persona catton", h)
+	}
+	// Load 跳过首行，只返回消息。
+	got, err := s.Load("s1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []Message{{Role: "user", Content: "hi"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Load = %+v, want %+v", got, want)
+	}
+}
+
+func TestStore_OldFileWithoutHeader(t *testing.T) {
+	// 兼容回归（主风险点）：旧文件无头行，Load/Meta 行为与改动前一致。
+	s := newTestStore(t)
+	if err := s.Append("s1", []Message{{Role: "user", Content: "a"}}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	h, err := s.Meta("s1")
+	if err != nil {
+		t.Fatalf("Meta: %v", err)
+	}
+	if h.Meta.Persona != "" {
+		t.Errorf("old file Meta = %+v, want zero", h)
+	}
+	got, err := s.Load("s1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []Message{{Role: "user", Content: "a"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Load = %+v, want %+v", got, want)
+	}
+}
+
+func TestStore_RewriteKeepsHeader(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.WriteMeta("s1", Header{Meta: HeaderMeta{Persona: "onee"}}); err != nil {
+		t.Fatalf("WriteMeta: %v", err)
+	}
+	if err := s.Append("s1", []Message{{Role: "user", Content: "a"}, {Role: "assistant", Content: "b"}}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := s.Rewrite("s1", []Message{{Role: "assistant", Content: "b"}}); err != nil {
+		t.Fatalf("Rewrite: %v", err)
+	}
+	h, err := s.Meta("s1")
+	if err != nil {
+		t.Fatalf("Meta: %v", err)
+	}
+	if h.Meta.Persona != "onee" {
+		t.Errorf("after rewrite Meta = %+v, want onee", h)
+	}
+	got, err := s.Load("s1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got) != 1 || got[0].Content != "b" {
+		t.Errorf("after rewrite Load = %+v, want [b]", got)
+	}
+}
+
+func TestStore_ListTurnCountExcludesHeader(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.WriteMeta("s1", Header{Meta: HeaderMeta{Persona: "catton"}}); err != nil {
+		t.Fatalf("WriteMeta: %v", err)
+	}
+	if err := s.Append("s1", []Message{{Role: "user", Content: "x"}}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	metas, err := s.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(metas) != 1 || metas[0].TurnCount != 1 {
+		t.Errorf("List = %+v, want 1 session with TurnCount 1", metas)
 	}
 }
 

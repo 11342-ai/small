@@ -44,6 +44,18 @@ type ToolCall struct {
 	Args string `json:"args"`
 }
 
+// Header 会话文件的头行元数据（JSONL 首行），记录会话级属性。
+// 当前只有人格名；会话级字段扩展加在这里，消息行格式不变（旧文件兼容见 Load）。
+type Header struct {
+	Meta HeaderMeta `json:"meta"`
+}
+
+// HeaderMeta 头行的元数据字段。
+type HeaderMeta struct {
+	// Persona 会话绑定的对话人格名（一个对话一个人格，创建时定型）。
+	Persona string `json:"persona"`
+}
+
 // Meta 会话的列表元数据，来自文件 stat 与行数。
 type Meta struct {
 	// ID 会话标识（不含路径分隔符，即文件名去后缀）。
@@ -126,6 +138,12 @@ func (s *Store) Load(id string) ([]Message, error) {
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
+		// 头行检测必须先于 Message 解析：头行也能 unmarshal 进 Message（全零字段），
+		// 不先拦下会被当成一条空消息。旧文件无头行，此分支恒不命中，行为与改前一致。
+		var h Header
+		if json.Unmarshal(sc.Bytes(), &h) == nil && h.Meta.Persona != "" {
+			continue
+		}
 		var m Message
 		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
 			continue // 坏行跳过：崩溃容错，见包注释
@@ -136,6 +154,67 @@ func (s *Store) Load(id string) ([]Message, error) {
 		return nil, fmt.Errorf("session: read %q: %w", id, err)
 	}
 	return msgs, nil
+}
+
+// WriteMeta 写入会话头行，仅用于**新建会话**（组合根在 Load 返回空历史时调用）。
+// 用 O_TRUNC 打开保证头行唯一；对已存在会话调用会截断文件，故调用约定必须是
+// "仅新建才写"（main 保证），本方法不做二次防御。
+func (s *Store) WriteMeta(id string, h Header) error {
+	if err := validateID(id); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := json.Marshal(h)
+	if err != nil {
+		return fmt.Errorf("session: marshal header: %w", err)
+	}
+	f, err := os.OpenFile(s.path(id), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("session: open %q: %w", id, err)
+	}
+	defer f.Close()
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		return fmt.Errorf("session: write header %q: %w", id, err)
+	}
+	return nil
+}
+
+// Meta 读取会话头行。文件不存在、首行非头行（旧文件兼容）、无 persona 时
+// 返回零值 Header 且不报错——这些都不是异常，是"没有 meta"的合法状态。
+func (s *Store) Meta(id string) (Header, error) {
+	if err := validateID(id); err != nil {
+		return Header{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return readHeader(s.path(id))
+}
+
+// readHeader 读文件首行并解析为 Header；无文件/空文件/首行非头行返回零值（不报错）。
+func readHeader(path string) (Header, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Header{}, nil
+		}
+		return Header{}, fmt.Errorf("session: open %q: %w", path, err)
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	if !sc.Scan() {
+		return Header{}, sc.Err() // 空文件（EOF 时 err 为 nil）：无头行
+	}
+	var h Header
+	if err := json.Unmarshal(sc.Bytes(), &h); err != nil {
+		return Header{}, nil // 首行不是头行：旧文件，无 meta
+	}
+	if h.Meta.Persona == "" {
+		return Header{}, nil
+	}
+	return h, nil
 }
 
 // Append 把消息追加进会话文件。每次写入一行（单行 O_APPEND 追加在 POSIX 下原子），
@@ -180,6 +259,25 @@ func (s *Store) Rewrite(id string, msgs []Message) error {
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName) // 仅失败路径生效：成功后 rename 已移走文件
+
+	// 头行保留：截断/摘要重写不能丢会话 meta（人格绑定），否则重启恢复后人格丢失。
+	// 旧文件无头行时读回零值，行为与改前一致。
+	header, err := readHeader(s.path(id))
+	if err != nil {
+		tmp.Close()
+		return err
+	}
+	if header.Meta.Persona != "" {
+		hdata, err := json.Marshal(header)
+		if err != nil {
+			tmp.Close()
+			return fmt.Errorf("session: marshal header: %w", err)
+		}
+		if _, err := tmp.Write(append(hdata, '\n')); err != nil {
+			tmp.Close()
+			return fmt.Errorf("session: write header for %q: %w", id, err)
+		}
+	}
 
 	for _, m := range msgs {
 		data, err := json.Marshal(m)
@@ -231,7 +329,8 @@ func validateID(id string) error {
 	return nil
 }
 
-// countLines 统计文件行数；读失败按 0 处理（List 尽力而为，不因单个文件阻塞）。
+// countLines 统计文件消息行数；读失败按 0 处理（List 尽力而为，不因单个文件阻塞）。
+// 头行（会话 meta）不计入——List.TurnCount 的语义是"消息条数"。
 func countLines(path string) int {
 	f, err := os.Open(path)
 	if err != nil {
@@ -241,7 +340,15 @@ func countLines(path string) int {
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	n := 0
+	first := true
 	for sc.Scan() {
+		if first {
+			first = false
+			var h Header
+			if json.Unmarshal(sc.Bytes(), &h) == nil && h.Meta.Persona != "" {
+				continue
+			}
+		}
 		n++
 	}
 	return n

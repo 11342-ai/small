@@ -20,6 +20,7 @@ import (
 	"small/internal/agent"
 	"small/internal/config"
 	"small/internal/memory"
+	"small/internal/persona"
 	"small/internal/provider"
 	"small/internal/session"
 	"small/internal/tool"
@@ -29,7 +30,14 @@ import (
 func main() {
 	// 会话 id：--session 指定则恢复/续聊该会话；缺省生成时间戳 id 开新会话。
 	sessionID := flag.String("session", "", "会话 ID（缺省创建新会话）")
+	// 人格：仅对**新建会话**生效；恢复会话时以会话内记录的 meta 为准（一个对话一个人格）。
+	personaName := flag.String("persona", "", "对话人格（缺省 default；可用人格见 internal/persona/personas/）")
 	flag.Parse()
+	// 位置参数防护：多余参数几乎都是 flag 拼写错误（如 `-- persona` 中间多空格，`persona`
+	// 会变成位置参数被静默忽略、用户误以为生效）。直接报错暴露，提示正确写法，而不是静默降级。
+	if args := flag.Args(); len(args) > 0 {
+		log.Fatalf("unexpected arguments: %v（flag 与参数之间勿加空格，正确写法如 --persona catton）", args)
+	}
 
 	// 1. 加载配置（唯一一次读取环境变量/配置文件，随后以 struct 整体注入）。
 	cfg, err := config.Load()
@@ -54,6 +62,42 @@ func main() {
 		log.Fatalf("load session %q: %v", id, err)
 	}
 
+	// 人格选择（一个对话一个人格，见 Zoo/model/persona.md）：
+	// 优先级 = 会话头行 meta（已定型）> --persona flag（仅真正的新建会话）> 默认人格。
+	// 判定"是否新建"看头行而不是消息条数：创建后未聊过的会话（只有头行）也是"已定型"，
+	// 恢复时同样以 meta 为准，flag 不覆盖。
+	mgr, err := persona.Load()
+	if err != nil {
+		log.Fatalf("load persona: %v", err)
+	}
+	p := mgr.Default()
+	if *personaName != "" {
+		p, err = mgr.Get(*personaName)
+		if err != nil {
+			log.Fatalf("%v", err) // 未命中：错误信息已附可用人格列表
+		}
+	}
+	if h, err := store.Meta(id); err != nil {
+		log.Fatalf("read session meta: %v", err)
+	} else if h.Meta.Persona != "" {
+		// 会话已定型：meta 优先。
+		if hp, err := mgr.Get(h.Meta.Persona); err == nil {
+			if *personaName != "" && *personaName != hp.Name {
+				fmt.Printf("会话已绑定人格 %q，忽略 --persona %q\n", hp.Name, *personaName)
+			}
+			p = hp
+		} else {
+			// 会话记录的人格本地不存在（如人格文件被删）：回退，不阻塞续聊。
+			fmt.Printf("会话人格 %q 不存在，回退到默认人格\n", h.Meta.Persona)
+		}
+	} else if len(msgs) == 0 {
+		// 真正的新建会话（无头行且无消息）：flag/默认 定型并写入头行。
+		if err := store.WriteMeta(id, session.Header{Meta: session.HeaderMeta{Persona: p.Name}}); err != nil {
+			log.Fatalf("write session meta: %v", err)
+		}
+	}
+	// else：旧文件（有消息、无头行，改版前创建的会话）——回退 flag/默认，不回填 meta（兼容最简）。
+
 	client := provider.New(cfg)
 	mem, err := memory.New(cfg.MemoryDir)
 	if err != nil {
@@ -63,15 +107,17 @@ func main() {
 	if err := builtin.RegisterBuiltins(reg, mem); err != nil {
 		log.Fatalf("register builtin tools: %v", err)
 	}
-	// 系统提示 = 基础行为 + 记忆启动注入（MEMORY.md 常驻层，见 Zoo/model/memory.md §7）。
-	// 组合根拼字符串即可，agent 循环零改动。
-	prompt := "你是一个简洁的助手，回答尽量控制在三句话以内。" +
-		"可用工具：echo（原样返回文本）、memory_search（检索长期记忆）、memory_get（读取记忆块）、memory_save（记住新事实）。" +
+	// 系统提示 = 基础契约（工具/记忆规则，人格无关）+ 人格正文 + 记忆启动注入。
+	// 角色句（"你是一个简洁的助手…"）已移入 personas/default.md：选别的人格时
+	// 不继承"简洁"约束。组合根拼字符串即可，agent 循环零改动。
+	base := "可用工具：echo（原样返回文本）、memory_search（检索长期记忆）、memory_get（读取记忆块）、memory_save（记住新事实）。" +
 		"回答涉及先前决策、偏好、待办或项目事实时，先调用 memory_search 检索；" +
 		"仅当用户明确要求记住某事时，才调用 memory_save 写入长期记忆。"
+	prompt := base + "\n\n" + p.SystemPrompt
 	if boot := loadBootstrapMemory(cfg.MemoryDir); boot != "" {
 		prompt += "\n\n<memory>\n" + boot + "\n</memory>"
 	}
+	fmt.Printf("人格: %s\n", p.Name)
 	a := agent.New(
 		agent.NewProviderChat(client, cfg.Model, reg.List(),
 			agent.WithThinking(true),
