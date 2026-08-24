@@ -25,6 +25,7 @@ import (
 	"small/internal/session"
 	"small/internal/tool"
 	"small/internal/tool/builtin"
+	"small/internal/trace"
 )
 
 func main() {
@@ -119,6 +120,10 @@ func main() {
 	}
 	prompt := persona.Compose(base, p, memBlock)
 	fmt.Printf("人格: %s\n", p.Name)
+	// 工具调用轨迹（观测元数据，独立于回灌历史）：跟随会话写 <sid>.trace.jsonl，
+	// 与 session 同目录、同生命周期。agent 不感知 trace——写盘动作包装成 observer 注入
+	// （见 Zoo/model/trace.md）。
+	tr := trace.New(filepath.Join(cfg.SessionDir, id+".trace.jsonl"))
 	a := agent.New(
 		agent.NewProviderChat(client, cfg.Model, reg.List(),
 			agent.WithThinking(true),
@@ -129,7 +134,8 @@ func main() {
 		agent.WithSession(id),
 		agent.WithHistory(agent.FromSession(msgs)),
 		agent.WithTokenBudget(cfg.MaxTokens),
-		// 工具调用实时展示：逐条打印名称/入参/结果（截断摘要，防长结果刷屏）。
+		// 工具调用实时展示 + 轨迹落盘：逐条打印名称/入参/结果（截断摘要，防长结果刷屏）。
+		// trace 写失败属次要失败（观测数据），只记日志不打断对话。
 		agent.WithToolObserver(func(ev agent.ToolCallEvent) {
 			fmt.Printf("→ %s(%s)\n", ev.Name, truncate(ev.Args, 120))
 			mark := ""
@@ -137,6 +143,13 @@ func main() {
 				mark = " [失败]"
 			}
 			fmt.Printf("  ↳ %s%s\n", truncate(ev.Result.Data, 200), mark)
+			if err := tr.Append(trace.Entry{
+				TS: time.Now(), Session: id, Round: ev.Round,
+				Name: ev.Name, Args: ev.Args, Data: ev.Result.Data,
+				IsError: ev.Result.IsError, DurationMs: ev.Duration.Milliseconds(),
+			}); err != nil {
+				log.Printf("trace: %v", err)
+			}
 		}),
 	)
 

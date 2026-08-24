@@ -85,6 +85,13 @@ func TestAgent_RunToolObserver(t *testing.T) {
 	if events[0].Result.Data != "hello" || events[0].Result.IsError {
 		t.Errorf("event result = %+v, want echo output", events[0].Result)
 	}
+	// 耗时/轮次随事件流出（trace 的输入）：首轮执行耗时非负，轮次从 0 起。
+	if events[0].Duration < 0 {
+		t.Errorf("duration = %v, want >= 0", events[0].Duration)
+	}
+	if events[0].Round != 0 {
+		t.Errorf("round = %d, want 0（单轮工具循环）", events[0].Round)
+	}
 }
 
 func TestAgent_RunPlainChat(t *testing.T) {

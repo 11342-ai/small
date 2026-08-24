@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"small/internal/session"
 	"small/internal/tool"
@@ -59,7 +60,8 @@ type Result struct {
 	PromptTokens int
 }
 
-// ToolCallEvent 一次工具调用的观测事件，供展示层实时渲染（工具名/入参/结果）。
+// ToolCallEvent 一次工具调用的观测事件，供展示层实时渲染与轨迹记录
+// （工具名/入参/结果/耗时/轮次）。
 type ToolCallEvent struct {
 	// Name 工具名。
 	Name string
@@ -67,6 +69,10 @@ type ToolCallEvent struct {
 	Args string
 	// Result 执行结果（Data + IsError），含业务失败标记。
 	Result tool.Result
+	// Duration 工具执行耗时（从开始执行到返回结果），供轨迹记录。
+	Duration time.Duration
+	// Round 工具循环第几轮（0 起），供轨迹定位多轮顺序。
+	Round int
 }
 
 // ToolObserver 工具调用观察者：Run 在每次工具实际执行后回调。
@@ -193,14 +199,20 @@ func (a *Agent) Run(ctx context.Context, userInput string) (Result, error) {
 				})
 				continue
 			}
+			// 执行计时：耗时随观测事件流出，供轨迹记录（trace 不感知执行过程，
+			// 只消费事件；执行成功才观测——未注册工具等失败已在历史里回灌可见）。
+			start := time.Now()
 			res, err := t.Execute(ctx, json.RawMessage(call.Args))
 			if err != nil {
 				// 框架级错误（契约破坏等）：中止循环并透传。
 				return Result{}, fmt.Errorf("agent: execute tool %q: %w", call.Name, err)
 			}
-			// 执行成功才观测：事件含名称/入参/结果，展示层据此实时渲染（nil-safe）。
+			// 执行成功才观测：事件含名称/入参/结果/耗时/轮次，展示层据此实时渲染（nil-safe）。
 			if a.observe != nil {
-				a.observe(ToolCallEvent{Name: call.Name, Args: call.Args, Result: res})
+				a.observe(ToolCallEvent{
+					Name: call.Name, Args: call.Args, Result: res,
+					Duration: time.Since(start), Round: round,
+				})
 			}
 			a.history = append(a.history, Turn{Role: "tool", ToolCallID: call.ID, Content: res.Data})
 		}
