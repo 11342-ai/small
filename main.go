@@ -128,7 +128,7 @@ func main() {
 	// 系统提示三段式装配（契约层→人格层→记忆层）收敛到 persona.Compose，main 只提供素材不手拼
 	// （见 Zoo/model/persona.md §4）。角色句（"你是一个简洁的助手…"）已移入 personas/default.md：
 	// 选别的人格时不继承"简洁"约束。组合根拼字符串即可，agent 循环零改动。
-	base := "可用工具：echo（原样返回文本）、exec（执行白名单内只读命令，每次需用户确认）、memory_search（检索长期记忆）、memory_get（读取记忆块）、memory_save（记住新事实）。" +
+	base := "可用工具：echo（原样返回文本）、exec（执行白名单内只读命令，每次需用户确认）、plan（维护多步任务的分步执行清单）、memory_search（检索长期记忆）、memory_get（读取记忆块）、memory_save（记住新事实）。" +
 		"回答涉及先前决策、偏好、待办或项目事实时，先调用 memory_search 检索；" +
 		"仅当用户明确要求记住某事时，才调用 memory_save 写入长期记忆。"
 	memBlock := ""
@@ -162,10 +162,16 @@ func main() {
 				mark = " [失败]"
 			}
 			fmt.Printf("  ↳ %s%s\n", truncate(ev.Result.Data, 200), mark)
+			// 事件类型：plan 变更单独标记（与工具调用区分，供 trace 对拍，见 model/plan.md §6）。
+			typ := "tool"
+			if ev.Name == "plan" {
+				typ = "plan"
+			}
 			if err := tr.Append(trace.Entry{
 				TS: time.Now(), Session: id, Round: ev.Round,
 				Name: ev.Name, Args: ev.Args, Data: ev.Result.Data,
 				IsError: ev.Result.IsError, DurationMs: ev.Duration.Milliseconds(),
+				Type: typ,
 			}); err != nil {
 				log.Printf("trace: %v", err)
 			}
@@ -219,7 +225,9 @@ func main() {
 			}
 			metaNeeded = false
 		}
-		result, err := a.Run(ctx, input)
+		// 计划清单（plan.md §3）：Run 级，每轮新建经 ctx 注入；agent 零改动。
+		runCtx := builtin.WithPlan(ctx, builtin.NewPlanStore())
+		result, err := a.Run(runCtx, input)
 		if err != nil {
 			log.Fatalf("agent: %v", err)
 		}

@@ -58,6 +58,7 @@ agent ──WithToolObserver── main 包装 ──→ trace.Store.Append
 | data | string | 执行结果文本（含业务失败） |
 | isError | bool | 业务失败标记 |
 | durationMs | int64 | 执行耗时毫秒（转 ms 保人读，不用 time.Duration 纳秒） |
+| type | string | 事件类型：缺省 `tool`（工具调用）；plan 变更记 `plan`（plan.md §6）。omitempty，旧文件缺失按 `tool` 处理，向后兼容 |
 
 ## 4. 接口设计
 

@@ -1,7 +1,7 @@
 # 计划工具（plan/todo）设计
 
 > 位置：`internal/tool/builtin`（一个带状态的内置工具）
-> 状态：**设计稿**（2026-08-25 讨论定稿，未实现）
+> 状态：**已实现**（2026-08-25 定稿并落地；§7 步骤全 ✅）
 > 关联：`model/tool.md`（工具三件套）；`model/tool-extend.md`（边界⑤无状态 → 本设计靠 ctx 注入解决）；`model/trace.md`（执行元数据独立哲学）；`agent.go`（工具执行 ctx）
 
 ## 1. 结论先行
@@ -34,7 +34,7 @@ func runPlanUpdate(store *plan.Store, args json.RawMessage) (tool.Result, error)
 - 绕开 tool-extend.md 依赖注入面①：`RegisterBuiltins` 签名不扩，工具只是从 ctx 取值。
 - ctx key 用包级私有类型（`type ctxKey struct{}`），防外部碰撞。
 
-## 4. 工具接口（草案）
+## 4. 工具接口（已实现）
 
 | 能力 | 语义 | 参数 |
 |---|---|---|
@@ -62,17 +62,69 @@ func runPlanUpdate(store *plan.Store, args json.RawMessage) (tool.Result, error)
 - **trace**：已定**记录** plan 变更——`trace.Entry` 加 `Type` 字段（缺省 `"tool"`，plan 事件 `"plan"`），向后兼容旧文件；§5 正确性边界（与 trace 对拍）依赖此记录，实现 plan 时同步扩展。
 - **tool-extend.md 边界⑤**：本设计是"有状态工具"的第一个实例，ctx 注入可复用为后续有状态工具（如 shell 的 cwd）的通用接法。
 
-## 7. 落地步骤
+## 7. 落地步骤（✅ 已实现 2026-08-25）
 
-1. `internal/plan`（或 builtin 内小包）：`Store`（add/update/list + 纯内存）+ ctx 注入 helper。
-2. builtin 一个工具构造（`Plan()`），执行逻辑外置具名函数（对齐 memory 工具模式）。
-3. 组合根：每轮 Run 新建 store 放 ctx；工具注册进 `RegisterBuiltins`。
-4. REPL 展示：状态变化时打印当前清单（限量）。
+1. ✅ `builtin/plan.go`：`PlanStore`（add/update/list + 纯内存）+ `WithPlan`/`planFromCtx`（ctx 注入 helper）
+2. ✅ builtin 工具构造 `Plan()`，执行逻辑外置 `runPlan`（对齐 memory 工具模式）
+3. ✅ 组合根：每轮 Run 新建 store 放 ctx（`builtin.WithPlan`）；`RegisterBuiltins` 无条件注册（无构造依赖）
+4. ✅ REPL 展示：每次操作返回最新清单，observer 顺带打印（状态变化即展示）
 
-## 8. 待决
+## 8. 使用文档
 
-无（工具命名与 trace 记录已定案 2026-08-25，见 §4/§6；RunScope 泛化移入 §9 观察项）。
+### 8.1 工具声明
 
-## 9. 观察项
+- **名称**：`plan`
+- **触发约束**：仅**多步任务**时维护清单（模型依据 Description 决策）；单步任务不要建清单——防清单垃圾化。
+- **权限**：Pass（清单是纯内存只读操作，无需 Ask 确认）。
+
+### 8.2 参数
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `action` | string | ✓ | `add` / `update` / `list` |
+| `text` | string | add 时必填 | 步骤描述（自动去首尾空白） |
+| `id` | int | update 时必填 | 目标步骤 ID（从 1 起） |
+| `status` | string | update 时必填 | `pending` / `in_progress` / `done` |
+
+### 8.3 动作与返回
+
+| 动作 | 语义 | 返回 |
+|---|---|---|
+| `add` | 追加一步（初始 `pending`） | 最新清单 |
+| `update` | 改指定步骤状态 | 最新清单 |
+| `list` | 查看当前清单（只读） | 最新清单 |
+
+清单渲染格式：`1. ☐ 查文件`（☐=待办 / ◐=进行中 / ☑=完成）；空清单返回 `（当前无计划步骤）`。每次操作都返回最新清单——模型可跟踪进度，组合根 observer 顺带打印给用户（状态变化即展示）。
+
+### 8.4 生命周期与边界
+
+- **Run 级内存**：一次用户输入对应一个 Run，清单随 Run 结束丢弃；恢复会话后不复活（无过期计划误导）。
+- **不进 session / 回灌**：清单是执行元数据，不写入会话历史、不注入模型上下文（§2 红线）。
+- **fail-closed**：组合根未注入清单（无 Run 上下文）时工具拒绝，业务失败回灌。
+- **trace**：每次变更以 `type: "plan"` 落盘，可与工具调用轨迹对拍（§6）。
+
+### 8.5 使用示例（对话）
+
+```
+用户：帮我整理这个项目的结构，并给出下一步建议
+模型：plan add "扫描目录结构"
+     → 1. ☐ 扫描目录结构
+      exec ls
+     → 1. ☐ 扫描目录结构
+      plan add "分析模块依赖"
+     → 1. ☐ 扫描目录结构
+       2. ☐ 分析模块依赖
+      plan update 1 done
+     → 1. ☑ 扫描目录结构
+       2. ☐ 分析模块依赖
+     ...
+     （任务收尾时 plan update 2 done）
+```
+
+## 9. 待决
+
+无（工具命名与 trace 记录已定案 2026-08-25，见 §4/§6；RunScope 泛化移入 §10 观察项）。
+
+## 10. 观察项
 
 - **RunScope 泛化**：ctx 是否泛化为通用 Run 作用域（未来 shell cwd、进度事件都挂这）——等第二个有状态工具出现再评估（YAGNI 门控），不主动做。

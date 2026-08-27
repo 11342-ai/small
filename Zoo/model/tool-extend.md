@@ -2,7 +2,7 @@
 
 > 位置：`internal/tool/builtin`（拓展落点）
 > 状态：**路线记录**（2026-08-25 讨论沉淀，未实现）
-> 关联：`model/tool.md`（模块本体）；`model/cli.md`（RequiresConfirm 权限种子）；`路线图.md`（安全护栏）；`model/kb.md`（doc 命令）
+> 关联：`model/tool.md`（模块本体）；`model/cli.md`（Permission 权限种子）；`路线图.md`（安全护栏）；`model/kb.md`（doc 命令）
 
 ## 1. 结论先行
 
@@ -40,7 +40,7 @@
 | OpenClaw | 记忆、web、computer use、消息通道、GitHub |
 | Cline | 终端、文件读写、浏览器、web 搜索、MCP |
 
-规律：**文件 + Shell + Web 是标配，记忆/规划/子代理是差异化**。本项目已有记忆（还领先多数项目），缺文件读 + web 抓取；shell 最后一块，等权限。
+规律：**文件 + Shell + Web 是标配，记忆/规划/子代理是差异化**。本项目已有记忆（还领先多数项目）；exec（Shell）已上最小安全版（2026-08-25），缺文件读 + web 抓取。
 
 ## 4. 模块边界清单（要不要改模块）
 
@@ -48,13 +48,13 @@
 
 | 边界 | 触发点 | 接法 |
 |---|---|---|
-| ① 依赖注入面 | 新工具要新依赖（根目录/HTTP 配置/key）→ `RegisterBuiltins(reg, mem)` 签名要扩 | 第三个依赖类型出现时升级为 deps struct |
+| ① 依赖注入面 | 新工具要新依赖（根目录/HTTP 配置/key）→ `RegisterBuiltins` 参数要扩 | ✅ 已升 deps struct（`builtin.Deps{Mem, Exec}`，2026-08-25 exec 触发）；后续新依赖只扩 struct 字段，不破签名 |
 | ② 同步执行 | 长任务（web_fetch 10s）阻塞 agent 循环、无进度 | 先接受阻塞；要流式再仿 `WithReplyObserver` 加事件 |
-| ③ 无权限 | 破坏性工具（file_write/shell）没审批 | cli.md `RequiresConfirm` 种子 + roadmap 安全护栏（横切） |
+| ③ 无权限 | 破坏性工具（file_write/shell）没审批 | cli.md `Permission`（Ask）种子 + roadmap 安全护栏（横切） |
 | ④ 结果单字符串 | 大文件/结构化输出超 `Data` 上限 | 截断 + 摘要（truncate 思路已有） |
 | ⑤ 无状态 | 跨调用状态（shell 的 cwd）无处安放 | 显式注入，别在工具内藏全局（首个实例：`model/plan.md` 的 ctx 注入） |
 
-关键判断："builtin 追加一个元素"的承诺在**工具只需 tool/memory** 时成立；工具要新依赖类型时 `RegisterBuiltins` 扩参——这是设计里写好的扩展点，不是缺陷。最可能先踩到 ①（file 工具要根目录）与 ③（写文件要审批）。
+关键判断："builtin 追加一个元素"的承诺在**工具只需 tool/memory** 时成立；工具要新依赖类型时扩 `Deps` struct 字段（不破签名）——这是设计里写好的扩展点，不是缺陷。最可能先踩到 ①（file 工具要根目录，已由 deps struct 兜住）与 ③（写文件要审批）。
 
 ## 5. 工作区定位 + 路径约束 ≠ 沙箱（概念辨析）
 
@@ -72,16 +72,14 @@
 | 例子 | file 工具只在 workspace 内 | bubblewrap/landlock/seccomp、审批门 |
 | 违反后果 | 无"违反"，只是解析结果 | 系统拒绝/权限错误 |
 
-结论：**"限制工具在 CWD/工作区内"只是沙箱的一层（路径 policy），不是沙箱**；真沙箱还覆盖网络/exec/资源/超时。路径约束属 roadmap 安全护栏的 policy 层，与 cli.md `RequiresConfirm` 同一棵树。
+结论：**"限制工具在 CWD/工作区内"只是沙箱的一层（路径 policy），不是沙箱**；真沙箱还覆盖网络/exec/资源/超时。路径约束属 roadmap 安全护栏的 policy 层，与 cli.md `Permission`（Ask）同一棵树。
 
 ## 6. 建议落点
 
 1. 先加 `file_read` + `doc_search`——纯 stdlib、零风险、直接服务"看文档/改代码"核心场景。
 2. 再加 `web_fetch`——单工具高价值，注意超时 + 返回大小上限。
-3. `file_write`/`shell` 等 roadmap 安全护栏落地后再上。
-4. 第三个依赖出现时，`RegisterBuiltins` 升 deps struct（一改两处，向后兼容）。
 3. ✅ `exec` 最小安全版已实现（2026-08-25，见 §2 B 档）；`file_write` 等 roadmap 安全护栏落地后再上。
-4. ✅ `RegisterBuiltins` 已升 deps struct（`builtin.Deps{Mem, Exec}`，2026-08-25，exec 触发）。
+4. ✅ `RegisterBuiltins` 已升 deps struct（`builtin.Deps{Mem, Exec}`，2026-08-25，exec 触发）——新增依赖只需扩 struct 字段，不再改签名。
 
 ## 7. 待决
 

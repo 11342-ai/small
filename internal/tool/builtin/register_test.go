@@ -15,6 +15,9 @@ func TestRegisterBuiltins(t *testing.T) {
 	if _, ok := reg.Get("echo"); !ok {
 		t.Error("echo should be registered")
 	}
+	if _, ok := reg.Get("plan"); !ok {
+		t.Error("plan should be registered (无构造依赖)")
+	}
 	// mem/exec 均为 nil：记忆与 exec 工具不注册（退化）。
 	for _, name := range []string{"memory_search", "exec"} {
 		if _, ok := reg.Get(name); ok {
@@ -32,7 +35,7 @@ func TestRegisterBuiltins_WithMemory(t *testing.T) {
 	if err := RegisterBuiltins(reg, Deps{Mem: mem}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, name := range []string{"echo", "get_current_time", "memory_search", "memory_get", "memory_save"} {
+	for _, name := range []string{"echo", "get_current_time", "plan", "memory_search", "memory_get", "memory_save"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Errorf("%s should be registered", name)
 		}

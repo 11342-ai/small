@@ -35,6 +35,9 @@ type Entry struct {
 	IsError bool `json:"isError"`
 	// DurationMs 执行耗时毫秒（转 ms 而非 time.Duration 纳秒，保人读可查）。
 	DurationMs int64 `json:"durationMs"`
+	// Type 事件类型：缺省 "tool"（工具调用）；plan 变更记 "plan"（见 Zoo/model/plan.md §6）。
+	// omitempty + 旧文件无此字段（""）按 "tool" 处理，向后兼容。
+	Type string `json:"type,omitempty"`
 }
 
 // Store trace 写入器：<path> 的追加日志。
