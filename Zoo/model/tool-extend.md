@@ -25,7 +25,7 @@
 | 工具 | 卡点 |
 |---|---|
 | `file_write`/`file_edit` | 破坏性 → 需要审批（接 cli.md `RequiresConfirm` 种子 / roadmap 安全护栏） |
-| `shell_exec` | 高危 → 需要沙箱（roadmap 安全护栏，暂缓） |
+| `exec` | ✅ **已实现最小安全版**（2026-08-25）：白名单 + 超时 + 每步确认，fail-closed，argv 执行非 shell；完整沙箱仍归 roadmap 安全护栏 |
 | `web_search` | 需要外部搜索 API key（新依赖 + 成本决策） |
 
 **C 档：暂缓/不做**——subagent（roadmap 独立项）、browser/computer use（量级不匹配）、MCP（另行评估）。
@@ -80,6 +80,8 @@
 2. 再加 `web_fetch`——单工具高价值，注意超时 + 返回大小上限。
 3. `file_write`/`shell` 等 roadmap 安全护栏落地后再上。
 4. 第三个依赖出现时，`RegisterBuiltins` 升 deps struct（一改两处，向后兼容）。
+3. ✅ `exec` 最小安全版已实现（2026-08-25，见 §2 B 档）；`file_write` 等 roadmap 安全护栏落地后再上。
+4. ✅ `RegisterBuiltins` 已升 deps struct（`builtin.Deps{Mem, Exec}`，2026-08-25，exec 触发）。
 
 ## 7. 待决
 

@@ -238,6 +238,11 @@ func (a *Agent) Reset() error {
 	return nil
 }
 
+// SetSystemPrompt 运行时替换系统提示（如 /persona 命令重定人格）。
+// 系统提示不进历史（allTurns 每次现拼），替换不影响历史完整性；
+// 语义上仅应在"无消息会话"时调用才安全（/persona 窗口已保证，见 Zoo/model/cli.md §6）。
+func (a *Agent) SetSystemPrompt(p string) { a.system = p }
+
 // allTurns 返回包含系统提示在内的完整历史（拷贝）。
 func (a *Agent) allTurns() []Turn {
 	turns := make([]Turn, 0, len(a.history)+1)

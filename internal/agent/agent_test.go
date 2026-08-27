@@ -56,6 +56,25 @@ func toolCall(id, name, args string) ToolCall {
 	return ToolCall{ID: id, Name: name, Args: args}
 }
 
+// SetSystemPrompt 运行时换系统提示：历史完整性不受影响（system 不落历史，allTurns 现拼）。
+func TestAgent_SetSystemPrompt(t *testing.T) {
+	script := &scriptCompleter{results: []Result{{Reply: "a"}, {Reply: "b"}}}
+	a := New(script, nil, nil, WithSystemPrompt("sys1"))
+	if _, err := a.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := script.captured[0][0]; got.Role != "system" || got.Content != "sys1" {
+		t.Fatalf("首轮 system = %+v, want sys1", got)
+	}
+	a.SetSystemPrompt("sys2")
+	if _, err := a.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := script.captured[1][0]; got.Role != "system" || got.Content != "sys2" {
+		t.Fatalf("SetSystemPrompt 后 system = %+v, want sys2", got)
+	}
+}
+
 // ---- 纯对话（无工具） ----
 
 func TestAgent_RunToolObserver(t *testing.T) {

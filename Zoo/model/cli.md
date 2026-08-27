@@ -75,7 +75,7 @@ func (p Permission) String() string { return string(p) }
 
 **三个预留位（现在留"位"，不实现）**：
 
-1. **工具接入位**：`Tool.Spec` 将来加 `Permission` 字段（tool-extend.md 边界③ 的接法），命令/工具共用一个检查函数。
+1. **工具接入位**：工具权限在**注册/执行侧**声明，**不进 `Tool.Spec`**——Spec 序列化进模型上下文，内部策略不应污染模型视角（exec 的 `ExecConfig.Confirm` 是第一个实例）；检查函数与命令共用（tool-extend.md 边界③）。
 2. **粒度升级位**：Ask 从命令层提升到工具层时，agent 循环加"挂起等确认"——exec 工具落地是触发器（届时评估）。
 3. **动态化位**：静态 → 用户配置覆盖（config.yml 里 `shell = always allow`，Claude/Cline 同款）——roadmap"安全护栏"模块的事。
 

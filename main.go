@@ -9,6 +9,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"small/internal/agent"
+	"small/internal/command"
 	"small/internal/config"
 	"small/internal/memory"
 	"small/internal/persona"
@@ -78,6 +80,9 @@ func main() {
 			log.Fatalf("%v", err) // 未命中：错误信息已附可用人格列表
 		}
 	}
+	// metaNeeded 标记"新建会话尚未定型"：meta 延后到首条消息写入（见 Zoo/model/cli.md §6）。
+	// 定型点从"创建时刻"挪到"第一条消息"：/persona 可在无消息窗口内重定人格。
+	metaNeeded := false
 	if h, err := store.Meta(id); err != nil {
 		log.Fatalf("read session meta: %v", err)
 	} else if h.Meta.Persona != "" {
@@ -92,10 +97,8 @@ func main() {
 			fmt.Printf("会话人格 %q 不存在，回退到默认人格\n", h.Meta.Persona)
 		}
 	} else if len(msgs) == 0 {
-		// 真正的新建会话（无头行且无消息）：flag/默认 定型并写入头行。
-		if err := store.WriteMeta(id, session.Header{Meta: session.HeaderMeta{Persona: p.Name}}); err != nil {
-			log.Fatalf("write session meta: %v", err)
-		}
+		// 真正的新建会话（无头行且无消息）：flag/默认 待定型，首条消息时写 meta。
+		metaNeeded = true
 	}
 	// else：旧文件（有消息、无头行，改版前创建的会话）——回退 flag/默认，不回填 meta（兼容最简）。
 
@@ -105,20 +108,36 @@ func main() {
 		log.Fatalf("memory store: %v", err)
 	}
 	reg := tool.New()
-	if err := builtin.RegisterBuiltins(reg, mem); err != nil {
+	// exec 工具最小安全版（演进序短期第二步）：白名单 + 超时 + 每步确认，fail-closed；
+	// 配置在组合根显式注入（见 Zoo/model/tool-extend.md B 档）。
+	if err := builtin.RegisterBuiltins(reg, builtin.Deps{
+		Mem: mem,
+		Exec: &builtin.ExecConfig{
+			Allow:   execAllow,
+			Timeout: 30 * time.Second,
+			Confirm: func(cmd string, args []string) bool {
+				fmt.Printf("确认执行 exec：%s %s？[y/N] ", cmd, strings.Join(args, " "))
+				line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+				ans := strings.ToLower(strings.TrimSpace(line))
+				return ans == "y" || ans == "yes"
+			},
+		},
+	}); err != nil {
 		log.Fatalf("register builtin tools: %v", err)
 	}
 	// 系统提示三段式装配（契约层→人格层→记忆层）收敛到 persona.Compose，main 只提供素材不手拼
 	// （见 Zoo/model/persona.md §4）。角色句（"你是一个简洁的助手…"）已移入 personas/default.md：
 	// 选别的人格时不继承"简洁"约束。组合根拼字符串即可，agent 循环零改动。
-	base := "可用工具：echo（原样返回文本）、memory_search（检索长期记忆）、memory_get（读取记忆块）、memory_save（记住新事实）。" +
+	base := "可用工具：echo（原样返回文本）、exec（执行白名单内只读命令，每次需用户确认）、memory_search（检索长期记忆）、memory_get（读取记忆块）、memory_save（记住新事实）。" +
 		"回答涉及先前决策、偏好、待办或项目事实时，先调用 memory_search 检索；" +
 		"仅当用户明确要求记住某事时，才调用 memory_save 写入长期记忆。"
 	memBlock := ""
 	if boot := loadBootstrapMemory(cfg.MemoryDir); boot != "" {
 		memBlock = "<memory>\n" + boot + "\n</memory>"
 	}
-	prompt := persona.Compose(base, p, memBlock)
+	// compose 三段式装配唯一入口：/persona 重定人格时复用（组合根闭包持有素材）。
+	compose := func(pp persona.Persona) string { return persona.Compose(base, pp, memBlock) }
+	prompt := compose(p)
 	fmt.Printf("人格: %s\n", p.Name)
 	// 工具调用轨迹（观测元数据，独立于回灌历史）：跟随会话写 <sid>.trace.jsonl，
 	// 与 session 同目录、同生命周期。agent 不感知 trace——写盘动作包装成 observer 注入
@@ -153,9 +172,22 @@ func main() {
 		}),
 	)
 
-	// 3. 多轮对话循环：stdin 逐行输入，"exit" 退出。
+	// 3. 命令系统：平行于 tool 骨架（用户触发 vs 模型触发），壳在 internal/command，
+	//    命令实现收敛在 main_commands.go 的具名构造函数，此处保持注册清单——
+	//    一眼看全命令全集（见 Zoo/model/cli.md）。
+	cmdReg := command.New()
+	// Ask 权限确认回调（nil-safe，fail-closed：不注入则 Ask 命令一律拒绝）。
+	cmdReg.Confirm = confirmName
+	cmdReg.Register(cmdHelp(cmdReg))
+	cmdReg.Register(cmdExit())
+	cmdReg.Register(cmdSession(id))
+	cmdReg.Register(cmdTools(reg))
+	cmdReg.Register(cmdClear(a))
+	cmdReg.Register(cmdPersona(a, mgr, store, id, compose, &p, &metaNeeded))
+
+	// 4. 多轮对话循环：stdin 逐行输入，"exit" 退出。
 	//    Agent.Run 每轮追加历史并推进一轮；持久化由 agent 在 Run 成功时自动落盘。
-	fmt.Println("开始多轮对话（输入 exit 退出）：")
+	fmt.Println("开始多轮对话（输入 exit 退出，/help 查看命令）：")
 	scanner := bufio.NewScanner(os.Stdin)
 	ctx := context.Background()
 	for scanner.Scan() {
@@ -165,6 +197,27 @@ func main() {
 		}
 		if input == "exit" {
 			break
+		}
+		// 命令分发："/" 开头交给命令系统（未知命令报错但不退出）。
+		if handled, output, err := cmdReg.Dispatch(ctx, input); handled {
+			if errors.Is(err, errExit) {
+				break
+			}
+			if err != nil {
+				fmt.Printf("%v\n", err)
+				continue
+			}
+			if output != "" {
+				fmt.Println(output)
+			}
+			continue
+		}
+		// 新建会话定型：首条消息前写 meta（定型点 = 第一条消息，见 model/cli.md §6）。
+		if metaNeeded {
+			if err := store.WriteMeta(id, session.Header{Meta: session.HeaderMeta{Persona: p.Name}}); err != nil {
+				log.Fatalf("write session meta: %v", err)
+			}
+			metaNeeded = false
 		}
 		result, err := a.Run(ctx, input)
 		if err != nil {
@@ -179,6 +232,12 @@ func main() {
 		log.Fatalf("read stdin: %v", err)
 	}
 }
+
+// errExit 退出信号：/exit 命令通过哨兵错误让组合根跳出循环（命令系统不感知 I/O）。
+var errExit = errors.New("exit")
+
+// execAllow exec 工具默认白名单（只读命令，保守起步；配置化留给 cli.md §5"动态化位"）。
+var execAllow = []string{"ls", "cat", "grep", "head", "tail", "echo", "date", "pwd", "whoami"}
 
 // bootstrapLimit MEMORY.md 启动注入的上限（字符数）：防常驻 token 膨胀。
 // 完整内容仍可通过 memory_search 检索（设计文档 §7）。

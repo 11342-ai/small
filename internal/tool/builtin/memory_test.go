@@ -170,7 +170,7 @@ func (s *stubCompleter) Complete(_ context.Context, turns []agent.Turn) (agent.R
 func TestAgentLoop_MemoryToolIntegration(t *testing.T) {
 	mem := newMemWithFile(t, "MEMORY.md", "## 部署决策\n我们决定用 JSONL 存储会话。")
 	reg := tool.New()
-	if err := RegisterBuiltins(reg, mem); err != nil {
+	if err := RegisterBuiltins(reg, Deps{Mem: mem}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	script := &stubCompleter{results: []agent.Result{
@@ -201,7 +201,7 @@ func TestAgentLoop_MemoryToolIntegration(t *testing.T) {
 func TestAgentLoop_MemorySaveIntegration(t *testing.T) {
 	mem := newMemWithFile(t, "MEMORY.md", "## 既有\n苹果")
 	reg := tool.New()
-	if err := RegisterBuiltins(reg, mem); err != nil {
+	if err := RegisterBuiltins(reg, Deps{Mem: mem}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	script := &stubCompleter{results: []agent.Result{
