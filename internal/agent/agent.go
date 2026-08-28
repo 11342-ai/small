@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"time"
 
+	"small/internal/policy"
 	"small/internal/session"
 	"small/internal/tool"
 )
@@ -92,14 +93,16 @@ type Agent struct {
 	chat        Completer
 	system      string
 	history     []Turn
-	tools       *tool.Registry // 为 nil 时工具调用不可用，退化为纯对话
-	store       *session.Store // 为 nil 时不做持久化（纯对话）
-	sid         string         // 当前会话 id；仅 store 非 nil 且 sid 非空时生效
-	persisted   int            // 已落盘的历史条数（恢复/注入初始历史后=len(history)）
-	budget      int            // 估算 token 预算；<=0 不启用截断
-	baseline    int            // 最近一次 Complete 的真实 prompt_tokens（usage）；0 表示无基线
-	baselineLen int            // 基线对应的历史长度（Complete 返回瞬间 len(history)）
-	observe     ToolObserver   // 工具调用观察者；nil 时不触发（nil-safe 回调约定）
+	tools       *tool.Registry               // 为 nil 时工具调用不可用，退化为纯对话
+	store       *session.Store               // 为 nil 时不做持久化（纯对话）
+	sid         string                       // 当前会话 id；仅 store 非 nil 且 sid 非空时生效
+	persisted   int                          // 已落盘的历史条数（恢复/注入初始历史后=len(history)）
+	budget      int                          // 估算 token 预算；<=0 不启用截断
+	baseline    int                          // 最近一次 Complete 的真实 prompt_tokens（usage）；0 表示无基线
+	baselineLen int                          // 基线对应的历史长度（Complete 返回瞬间 len(history)）
+	observe     ToolObserver                 // 工具调用观察者；nil 时不触发（nil-safe 回调约定）
+	perms       map[string]policy.Permission // 工具权限表（按工具名）；nil = 全 Pass（旧行为）
+	confirm     func(name string) bool       // Ask 工具确认回调；nil-safe，Ask 且 nil → 拒绝
 }
 
 // Option 以函数式选项配置 Agent。
@@ -138,6 +141,20 @@ func WithToolObserver(obs ToolObserver) Option {
 	return func(a *Agent) { a.observe = obs }
 }
 
+// WithToolPermissions 注入工具权限表（按工具名 → policy.Permission，权限横切层，
+// 见 Zoo/model/policy.md）。nil 或空表 = 全 Pass（与不注入行为一致）；
+// Ask 工具执行前需经确认回调放行，无回调直接拒绝（fail-closed）。
+func WithToolPermissions(m map[string]policy.Permission) Option {
+	return func(a *Agent) { a.perms = m }
+}
+
+// WithToolConfirm 注入工具确认回调（Ask 工具执行前调用，权限横切层）。
+// 签名与命令层 Registry.Confirm 一致，组合根可复用同一实现；nil-safe——
+// Ask 工具在回调为 nil 或返回 false 时一律不执行（业务失败回灌）。
+func WithToolConfirm(fn func(name string) bool) Option {
+	return func(a *Agent) { a.confirm = fn }
+}
+
 // New 构造 Agent。结构协作对象以显式参数注入（chat、tools、store），便于测试时替换 mock；
 // tools 为 nil 时退化为纯对话，store 为 nil 时不做持久化。行为开关走 Option。
 func New(chat Completer, tools *tool.Registry, store *session.Store, opts ...Option) *Agent {
@@ -146,6 +163,22 @@ func New(chat Completer, tools *tool.Registry, store *session.Store, opts ...Opt
 		o(a)
 	}
 	return a
+}
+
+// guard 工具执行前的权限拦截（权限横切层，policy.md §3.2）：
+// 按工具名查权限表（缺省 Pass）→ Ask 走确认回调。拒绝返回业务失败结果（回灌模型自行
+// 调整）与 false（不执行）；工具未执行不触发 observer（观察者只在实际执行后回调）。
+func (a *Agent) guard(call ToolCall) (tool.Result, bool) {
+	if a.perms == nil {
+		return tool.Result{}, true // 未注入权限表 = 全 Pass（旧行为）
+	}
+	if a.perms[call.Name] != policy.Ask {
+		return tool.Result{}, true
+	}
+	if a.confirm == nil || !a.confirm(call.Name) {
+		return tool.Result{Data: call.Name + " 执行被拒绝：未获确认", IsError: true}, false
+	}
+	return tool.Result{}, true
 }
 
 // Run 推进一轮对话：
@@ -197,6 +230,11 @@ func (a *Agent) Run(ctx context.Context, userInput string) (Result, error) {
 				a.history = append(a.history, Turn{
 					Role: "tool", ToolCallID: call.ID, Content: "未注册的工具: " + call.Name,
 				})
+				continue
+			}
+			// 权限拦截：Ask 工具需确认放行；拒绝则业务失败回灌，工具不执行、不观测。
+			if denied, deniedOK := a.guard(call); !deniedOK {
+				a.history = append(a.history, Turn{Role: "tool", ToolCallID: call.ID, Content: denied.Data})
 				continue
 			}
 			// 执行计时：耗时随观测事件流出，供轨迹记录（trace 不感知执行过程，

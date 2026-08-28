@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"small/internal/memory"
+	"small/internal/policy"
 	"small/internal/tool"
 )
 
@@ -63,9 +64,31 @@ func TestRegisterBuiltins_WithFile(t *testing.T) {
 	if err := RegisterBuiltins(reg, Deps{File: &FileConfig{Root: t.TempDir()}}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, name := range []string{"file_read", "file_list", "doc_search"} {
+	for _, name := range []string{"file_read", "file_list", "doc_search", "file_tree", "propose_file_write", "propose_file_edit", "file_edit", "file_write"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Errorf("%s should be registered with File config", name)
+		}
+	}
+}
+
+func TestRegisterBuiltins_PermissionTableComplete(t *testing.T) {
+	// 注册全部内置工具后：权限表必须全量覆盖（register 内校验，防新增工具漏登记裸奔）。
+	reg := tool.New()
+	deps := Deps{File: &FileConfig{Root: t.TempDir()}, Exec: &ExecConfig{Allow: []string{"echo"}}}
+	if err := RegisterBuiltins(reg, deps); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, name := range []string{"echo", "plan", "get_current_time", "web_fetch", "file_read",
+		"file_list", "file_tree", "doc_search", "propose_file_write", "propose_file_edit",
+		"memory_search", "memory_get", "memory_save", "exec", "file_write", "file_edit"} {
+		if ToolPermissions[name] == "" {
+			t.Errorf("%s 未登记权限", name)
+		}
+	}
+	// Ask 语义：写/执行类工具必须 Ask（不是 Pass）。
+	for _, name := range []string{"exec", "file_write", "file_edit"} {
+		if ToolPermissions[name] != policy.Ask {
+			t.Errorf("%s 应为 Ask，got %s", name, ToolPermissions[name])
 		}
 	}
 }

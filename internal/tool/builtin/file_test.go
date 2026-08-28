@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,5 +150,243 @@ func TestRunDocSearch_SkipsBigAndHidden(t *testing.T) {
 	res, err := runDocSearch(cfg, json.RawMessage(`{"query":"core"}`))
 	if err != nil || !res.IsError {
 		t.Fatalf(".git 应被跳过（无命中），got res=%+v err=%v", res, err)
+	}
+}
+
+// writeLines 建一个 line1..lineN 的测试文件。
+func writeLines(t *testing.T, root, rel string, n int) string {
+	t.Helper()
+	var b strings.Builder
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&b, "line%d\n", i)
+	}
+	p := filepath.Join(root, rel)
+	if err := os.WriteFile(p, []byte(b.String()), 0o644); err != nil {
+		t.Fatalf("write %s: %v", rel, err)
+	}
+	return p
+}
+
+func TestRunFileRead_Window(t *testing.T) {
+	root := newFileWorkspace(t)
+	writeLines(t, root, "multi.txt", 10)
+	cfg := &FileConfig{Root: root}
+
+	// offset=3 limit=3 → 行 3..5，附续读建议 offset=6。
+	res, err := runFileRead(cfg, json.RawMessage(`{"path":"multi.txt","offset":3,"limit":3}`))
+	if err != nil || res.IsError {
+		t.Fatalf("窗口读失败：res=%+v err=%v", res, err)
+	}
+	for _, want := range []string{"3│ line3", "4│ line4", "5│ line5"} {
+		if !strings.Contains(res.Data, want) {
+			t.Fatalf("应含 %q，got %q", want, res.Data)
+		}
+	}
+	if strings.Contains(res.Data, "1│ line1") || strings.Contains(res.Data, "6│ line6") {
+		t.Fatalf("窗口外行不应出现，got %q", res.Data)
+	}
+	if !strings.Contains(res.Data, "offset=6") {
+		t.Fatalf("应给续读建议 offset=6，got %q", res.Data)
+	}
+}
+
+func TestRunFileRead_WindowToEnd(t *testing.T) {
+	root := newFileWorkspace(t)
+	writeLines(t, root, "multi.txt", 10)
+	cfg := &FileConfig{Root: root}
+
+	// offset=9 limit=5：limit 超界截到文件尾，此时无续读建议。
+	res, err := runFileRead(cfg, json.RawMessage(`{"path":"multi.txt","offset":9,"limit":5}`))
+	if err != nil || res.IsError {
+		t.Fatalf("窗口读失败：res=%+v err=%v", res, err)
+	}
+	if !strings.Contains(res.Data, "9│ line9") || !strings.Contains(res.Data, "10│ line10") {
+		t.Fatalf("应含末尾两行，got %q", res.Data)
+	}
+	if strings.Contains(res.Data, "继续可") {
+		t.Fatalf("读到文件尾不应给续读建议，got %q", res.Data)
+	}
+}
+
+func TestRunFileRead_OffsetBeyond(t *testing.T) {
+	root := newFileWorkspace(t)
+	writeLines(t, root, "multi.txt", 3)
+	cfg := &FileConfig{Root: root}
+
+	res, err := runFileRead(cfg, json.RawMessage(`{"path":"multi.txt","offset":99}`))
+	if err != nil || !res.IsError || !strings.Contains(res.Data, "offset=99 超出") {
+		t.Fatalf("超界应提示，got res=%+v err=%v", res, err)
+	}
+}
+
+func TestRunFileRead_SensitiveEnv(t *testing.T) {
+	root := newFileWorkspace(t)
+	cfg := &FileConfig{Root: root}
+	for _, f := range []string{".env", ".env.example"} {
+		if err := os.WriteFile(filepath.Join(root, f), []byte("SECRET=xx"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{".env", ".env.example"} {
+		res, err := runFileRead(cfg, json.RawMessage(`{"path":"`+f+`"}`))
+		if err != nil || !res.IsError || !strings.Contains(res.Data, "IGNORED") {
+			t.Fatalf("%s 应拒绝读取，got res=%+v err=%v", f, res, err)
+		}
+	}
+	// 普通文件不受影响（回归）。
+	res, err := runFileRead(cfg, json.RawMessage(`{"path":"README.md"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("普通文件应照常读，got res=%+v err=%v", res, err)
+	}
+}
+
+func TestRunFileRead_TooLarge(t *testing.T) {
+	root := newFileWorkspace(t)
+	p := filepath.Join(root, "huge.txt")
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxFileReadSize + 1); err != nil { // 稀疏文件，不占磁盘
+		t.Fatal(err)
+	}
+	f.Close()
+	cfg := &FileConfig{Root: root}
+
+	res, err := runFileRead(cfg, json.RawMessage(`{"path":"huge.txt"}`))
+	if err != nil || !res.IsError || !strings.Contains(res.Data, "过大") {
+		t.Fatalf("超大文件应提示跳过，got res=%+v err=%v", res, err)
+	}
+}
+
+func TestRunFileList_IgnoreDirsAndFiles(t *testing.T) {
+	root := newFileWorkspace(t)
+	must := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must("node_modules/pkg/a.js", "x")
+	must("dist/bundle.js", "x")
+	must("vendor/example.com/x.go", "package x")
+	must("src/app.js", "x")
+	must("src/lib.min.js", "x")
+	must("src/lib.js.map", "x")
+	cfg := &FileConfig{Root: root}
+
+	// glob **/*.go：vendor/ 下应被跳过（结果里不应有 vendor 路径）。
+	res, err := runFileList(cfg, json.RawMessage(`{"path":"**/*.go"}`))
+	if err != nil || res.IsError || strings.Contains(res.Data, "vendor") {
+		t.Fatalf("vendor 应被跳过，got res=%+v err=%v", res, err)
+	}
+	// glob **/*.js：普通 js 命中，node_modules/dist/*.min.js/*.map 全部跳过。
+	res, err = runFileList(cfg, json.RawMessage(`{"path":"**/*.js"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("glob 失败：res=%+v err=%v", res, err)
+	}
+	if !strings.Contains(res.Data, "src/app.js") {
+		t.Fatalf("普通 js 应命中，got %q", res.Data)
+	}
+	for _, bad := range []string{"node_modules", "dist/", ".min.js", ".map"} {
+		if strings.Contains(res.Data, bad) {
+			t.Fatalf("忽略项不应出现（%s），got %q", bad, res.Data)
+		}
+	}
+}
+
+func TestRunFileList_DirListingFiltersIgnored(t *testing.T) {
+	root := newFileWorkspace(t)
+	if err := os.MkdirAll(filepath.Join(root, "node_modules/pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "node_modules/pkg/x.js"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &FileConfig{Root: root}
+
+	res, err := runFileList(cfg, json.RawMessage(`{"path":"."}`))
+	if err != nil || res.IsError {
+		t.Fatalf("列目录失败：res=%+v err=%v", res, err)
+	}
+	if strings.Contains(res.Data, "node_modules") || strings.Contains(res.Data, ".git") {
+		t.Fatalf("列目录不应含忽略/隐藏目录，got %q", res.Data)
+	}
+}
+
+func TestRunDocSearch_IgnoreDirs(t *testing.T) {
+	root := newFileWorkspace(t)
+	if err := os.MkdirAll(filepath.Join(root, "node_modules/pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "node_modules/pkg/a.js"), []byte("SECRET_TOKEN_XYZ"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &FileConfig{Root: root}
+
+	res, err := runDocSearch(cfg, json.RawMessage(`{"query":"SECRET_TOKEN_XYZ"}`))
+	if err != nil || !res.IsError {
+		t.Fatalf("node_modules 内命中应被跳过（无结果），got res=%+v err=%v", res, err)
+	}
+}
+
+func TestRunDocSearch_PathFile(t *testing.T) {
+	root := newFileWorkspace(t)
+	cfg := &FileConfig{Root: root}
+
+	// path 限定单文件：命中只来自 README.md（JSONL 只出现在 README）。
+	res, err := runDocSearch(cfg, json.RawMessage(`{"query":"JSONL","path":"README.md"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("限定文件搜索失败：res=%+v err=%v", res, err)
+	}
+	if !strings.Contains(res.Data, "README.md:") {
+		t.Fatalf("应命中 README.md，got %q", res.Data)
+	}
+	// 限定文件内没有的词 → 未找到（不扩散到其他文件）。
+	res, err = runDocSearch(cfg, json.RawMessage(`{"query":"package","path":"README.md"}`))
+	if err != nil || !res.IsError {
+		t.Fatalf("限定文件内无匹配应失败，got res=%+v err=%v", res, err)
+	}
+}
+
+func TestRunDocSearch_PathDir(t *testing.T) {
+	root := newFileWorkspace(t)
+	cfg := &FileConfig{Root: root}
+
+	// path 限定子目录：只搜 internal 下，不搜根 README。
+	res, err := runDocSearch(cfg, json.RawMessage(`{"query":"Spec","path":"internal"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("限定目录搜索失败：res=%+v err=%v", res, err)
+	}
+	if !strings.Contains(res.Data, "tool/tool.go") {
+		t.Fatalf("应命中 internal/tool/tool.go，got %q", res.Data)
+	}
+	if strings.Contains(res.Data, "README.md") {
+		t.Fatalf("限定目录不应命中外部文件，got %q", res.Data)
+	}
+}
+
+func TestRunDocSearch_PathMissing(t *testing.T) {
+	root := newFileWorkspace(t)
+	cfg := &FileConfig{Root: root}
+
+	res, err := runDocSearch(cfg, json.RawMessage(`{"query":"x","path":"no-such-dir"}`))
+	if err != nil || !res.IsError || !strings.Contains(res.Data, "路径不存在") {
+		t.Fatalf("路径不存在应报错，got res=%+v err=%v", res, err)
+	}
+}
+
+func TestRunDocSearch_PathExplicitIgnoresHidden(t *testing.T) {
+	root := newFileWorkspace(t)
+	cfg := &FileConfig{Root: root}
+
+	// 显式点名 .git（隐藏目录）：照常搜索（对齐 file_read 语义），命中 .git/config。
+	res, err := runDocSearch(cfg, json.RawMessage(`{"query":"core","path":".git"}`))
+	if err != nil || res.IsError || !strings.Contains(res.Data, ".git/config") {
+		t.Fatalf("显式点名隐藏目录应可搜，got res=%+v err=%v", res, err)
 	}
 }

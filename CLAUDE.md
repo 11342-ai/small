@@ -14,6 +14,7 @@ small/
 │   ├── session/            # 会话持久化：JSONL 每会话一文件，agent 的存储部件
 │   ├── memory/             # 长期记忆：Markdown 文件 + bigram 关键词索引 + 归档层受控追加，存储部件
 │   ├── persona/            # 人格：go:embed 内置人格文件（frontmatter + 正文），提示词源部件
+│   ├── policy/             # 权限：Pass/Ask 类型（命令与工具共享判定，安全护栏地基，见 cli.md §5）
 │   └── tool/               # 工具：声明/执行/注册（Registry）+ 内置工具（builtin）
 └── Zoo/                    # 设计文档、约定、踩坑记录
 ```
@@ -73,9 +74,21 @@ cloc . --by-file --not-match-f='_test\.go$'                 # 逐文件明细
 - **错误处理**：只在系统边界（HTTP 响应、外部输入）防御；内部契约（如"err 非 nil 时 resp 为 nil"）信任不重复防御；判等用 `errors.Is/As`。
 - **DTO 打包**：请求/响应 struct 化；内部字段（如 `stream` 开关）不进对外 DTO（用内嵌 `chatPayload` 注入）。
 
+### 新增内置工具的标准流程（工具声明 + 权限声明）
+
+> 新增工具必须走完整五步，缺一不可（权限声明是硬性一步，防"写工具裸奔"）：
+
+1. **一工具一构造函数**：`builtin/xxx.go` 写 `Xxx(cfg) tool.Tool`（对齐 `Echo()`/`FileRead()` 同款）；执行逻辑超 10 行外置具名函数 `runXxx` + 一行转发闭包（可脱离工具壳单测）。
+2. **注册**：`builtin/register.go` 追加注册元素；需要新依赖类型时扩 `Deps` struct 字段（不破签名）。
+3. **登记权限**：`builtin/tool_permissions.go` 的 `ToolPermissions` 表登记该工具——**写/执行类工具 = `policy.Ask`，只读 = `policy.Pass`**（全量列举；漏登记由 `RegisterBuiltins` 注册后校验在注册期暴露，fail-fast）。
+4. **提示词**：`main.go` base 字符串补工具说明（触发约束一并写清）。
+5. **验证**：单测 + 合并门槛（`go test -race ./...` / `go vet` / `gofmt`）全绿。
+
+权限语义（见 `Zoo/model/policy.md`）：Ask 工具的确认由 agent 权限层统一提供（`WithToolConfirm`，组合根注入），**工具内部不再写确认逻辑**——新增 Ask 工具只需登记权限表，确认交互零代码。
+
 ## 架构与模块边界
 
-- **依赖严格单向**：`main → agent → provider → config`，`agent → session`，`agent → tool`，`provider → retry`（子包），`tool/builtin → memory`（叶子）。禁止反向/循环依赖。
+- **依赖严格单向**：`main → agent → provider → config`，`agent → session`，`agent → tool`，`agent → policy`，`tool/builtin → policy`，`provider → retry`（子包），`tool/builtin → memory`（叶子）。禁止反向/循环依赖。
 - **职责边界**：
   - `provider`（传输层）：只做 HTTP 语义，不感知业务。
   - `agent`（领域层）：只管循环/历史/自动持久化，不感知 provider DTO。
@@ -92,7 +105,7 @@ cloc . --by-file --not-match-f='_test\.go$'                 # 逐文件明细
 3. **流式"拿到 2xx 后绝不重试"**——否则重复已吐出的 token。
 4. **流中失败不回退非流式**（adapter 层同样）——失败只能透传错误，由调用方重试整个对话。
 5. API key 等机密**绝不入库**（提交前 grep 检查）。
-6. `builtin` 生产代码只允许 import `tool`/`memory`，**不得反向依赖** `agent`/`session`/`provider`/`config`（`imports_test.go` 固化；测试文件不受限，可自由 import 做集成验证）。
+6. `builtin` 生产代码只允许 import `tool`/`memory`/`policy`，**不得反向依赖** `agent`/`session`/`provider`/`config`（`imports_test.go` 固化；测试文件不受限，可自由 import 做集成验证）。
 7. 合并门槛：`go test -race ./...`、`go vet`、`gofmt` 全绿。
 
 ## 重要决策与取舍
@@ -121,3 +134,5 @@ cloc . --by-file --not-match-f='_test\.go$'                 # 逐文件明细
 | 人格切换语义 | 一个对话一个人格（创建时定型，不中途切）；恢复以会话 meta 为准 | 缓存约束不成立（本项目规模收益可忽略）；旧人格回复留历史会串味 |
 | 会话 meta | JSONL 首行 `{"meta":{...}}`，旧文件兼容（无头行照常读），Rewrite 保头 | 记录人格绑定且不改消息行格式 |
 | 提示词装配 | `persona.Compose(base, p, memory)` 三段式唯一装配入口（契约→人格→记忆） | 字段（first_message/examples）缺省零回归；main 不再手拼 |
+| 工具权限 | 静态表 `builtin.ToolPermissions`（按工具名，**不进 `Tool.Spec`**）+ agent 工具循环统一拦截（`WithToolPermissions`/`WithToolConfirm`） | Spec 序列化给模型，内部策略不污染模型视角；Ask 无确认回调即拒绝（fail-closed 由 agent 硬约束） |
+| 权限类型 | 只 `Pass`/`Ask`（与命令层共用同一 policy 类型） | 横切不分裂；Deny/动态覆盖留位（cli.md §5） |

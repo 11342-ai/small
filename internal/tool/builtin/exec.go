@@ -10,22 +10,20 @@ import (
 	"small/internal/tool"
 )
 
-// ExecConfig exec 工具的安全配置（最小安全版：白名单 + 超时 + 每步确认，三把锁）。
+// ExecConfig exec 工具的安全配置（白名单 + 超时；确认已迁至 agent 权限横切层，
+// exec 在权限表中为 Ask，见 Zoo/model/policy.md）。
 type ExecConfig struct {
 	// Allow 命令白名单（按命令名，fail-closed：空或不含即拒绝）。
 	Allow []string
 	// Timeout 单次执行超时上限；<=0 用默认 30s。
 	Timeout time.Duration
-	// Confirm 执行前确认回调（nil-safe）：返回 true 放行；nil 时一律拒绝（fail-closed）——
-	// 不注入确认就没有 exec，保证不会出现"裸奔版"。
-	Confirm func(cmd string, args []string) bool
 }
 
 // defaultExecTimeout exec 默认超时。
 const defaultExecTimeout = 30 * time.Second
 
 // Exec 构造命令执行工具（exec）。最小安全版（见 Zoo/model/tool-extend.md B 档）：
-// 白名单 + 超时 + 每步确认，缺一即拒绝（fail-closed）。
+// 白名单 + 超时（每步确认已由 agent 权限层统一提供，exec 为 Ask）。
 // 刻意不用 shell（sh -c）解析——直接 argv 执行，白名单按命令名生效，
 // 避免 shell 语法拼接绕过白名单；参数也不做 shell 解释，减少注入面。
 func Exec(cfg ExecConfig) tool.Tool {
@@ -61,13 +59,9 @@ func runExec(ctx context.Context, cfg ExecConfig, args json.RawMessage) (tool.Re
 	if cmd == "" {
 		return tool.Result{Data: "参数错误: command 为空", IsError: true}, nil
 	}
-	// 白名单（fail-closed）：命令名不在 Allow 内直接拒绝，不给确认机会。
+	// 白名单（fail-closed）：命令名不在 Allow 内直接拒绝。
 	if !execAllowed(cfg.Allow, cmd) {
 		return tool.Result{Data: "exec 拒绝：命令 " + cmd + " 不在白名单内", IsError: true}, nil
-	}
-	// 每步确认（fail-closed）：Confirm 为 nil 或用户拒绝都不执行。
-	if cfg.Confirm == nil || !cfg.Confirm(cmd, in.Args) {
-		return tool.Result{Data: "exec 拒绝：未获确认", IsError: true}, nil
 	}
 	// 超时：取配置与 ctx 中较早的截止（外部 ctx 取消同样生效）。
 	timeout := cfg.Timeout

@@ -110,20 +110,14 @@ func main() {
 	reg := tool.New()
 	// 文件类工具（tool-extend.md A 档）：工作区根经 detectRoot 注入（路径 policy，见 §5）。
 	fileRoot := detectRoot()
-	// exec 工具最小安全版（演进序短期第二步）：白名单 + 超时 + 每步确认，fail-closed；
-	// 配置在组合根显式注入（见 Zoo/model/tool-extend.md B 档）。
+	// exec 工具最小安全版（演进序短期第二步）：白名单 + 超时（每步确认已迁至 agent
+	// 权限横切层，exec 在权限表中为 Ask，见 Zoo/model/policy.md）。
 	if err := builtin.RegisterBuiltins(reg, builtin.Deps{
 		Mem:  mem,
 		File: &builtin.FileConfig{Root: fileRoot},
 		Exec: &builtin.ExecConfig{
 			Allow:   execAllow,
 			Timeout: 30 * time.Second,
-			Confirm: func(cmd string, args []string) bool {
-				fmt.Printf("确认执行 exec：%s %s？[y/N] ", cmd, strings.Join(args, " "))
-				line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-				ans := strings.ToLower(strings.TrimSpace(line))
-				return ans == "y" || ans == "yes"
-			},
 		},
 	}); err != nil {
 		log.Fatalf("register builtin tools: %v", err)
@@ -131,7 +125,7 @@ func main() {
 	// 系统提示三段式装配（契约层→人格层→记忆层）收敛到 persona.Compose，main 只提供素材不手拼
 	// （见 Zoo/model/persona.md §4）。角色句（"你是一个简洁的助手…"）已移入 personas/default.md：
 	// 选别的人格时不继承"简洁"约束。组合根拼字符串即可，agent 循环零改动。
-	base := "可用工具：echo（原样返回文本）、exec（执行白名单内只读命令，每次需用户确认）、plan（维护多步任务的分步执行清单）、file_read（读工作区文件）、file_list（列目录/找文件）、doc_search（工作区关键词搜索）、web_fetch（抓取网页转文本）、memory_search（检索长期记忆）、memory_get（读取记忆块）、memory_save（记住新事实）。" +
+	base := "可用工具：echo（原样返回文本）、exec（执行白名单内只读命令，每次需用户确认）、plan（维护多步任务的分步执行清单）、file_read（读工作区文件，支持 offset/limit 窗口化）、file_list（列目录/找文件）、file_tree（目录树速览工作区结构）、doc_search（工作区关键词搜索）、file_write（写工作区文件，整体覆盖，每次需用户确认）、file_edit（按字符串替换编辑工作区文件，每次需用户确认）、propose_file_write（提议写文件，确认后才落地）、propose_file_edit（提议编辑文件，确认后才落地）、web_fetch（抓取网页转文本）、memory_search（检索长期记忆）、memory_get（读取记忆块）、memory_save（记住新事实）。" +
 		"回答涉及先前决策、偏好、待办或项目事实时，先调用 memory_search 检索；" +
 		"用户提供链接并希望了解其内容时，用 web_fetch 读取；" +
 		"仅当用户明确要求记住某事时，才调用 memory_save 写入长期记忆。"
@@ -157,6 +151,11 @@ func main() {
 		agent.WithSession(id),
 		agent.WithHistory(agent.FromSession(msgs)),
 		agent.WithTokenBudget(cfg.MaxTokens),
+		// 权限横切层（policy.md §3.2）：注入工具权限表 + Ask 确认回调。
+		// 确认交互复用命令层 confirmName（签名一致），exec/file_write/file_edit
+		// 执行前统一在此弹确认——不再各自内置确认逻辑。
+		agent.WithToolPermissions(builtin.ToolPermissions),
+		agent.WithToolConfirm(confirmName),
 		// 工具调用实时展示 + 轨迹落盘：逐条打印名称/入参/结果（截断摘要，防长结果刷屏）。
 		// trace 写失败属次要失败（观测数据），只记日志不打断对话。
 		agent.WithToolObserver(func(ev agent.ToolCallEvent) {
@@ -229,8 +228,11 @@ func main() {
 			}
 			metaNeeded = false
 		}
-		// 计划清单（plan.md §3）：Run 级，每轮新建经 ctx 注入；agent 零改动。
+		// 计划清单（plan.md §3）+ 提议暂存（tool-fs.md §4.5）：Run 级，每轮新建经 ctx 注入；
+		// agent 零改动。提议的确认在 Run 结束后由组合根处理（下方"提议落地"段）。
+		propStore := builtin.NewProposedStore()
 		runCtx := builtin.WithPlan(ctx, builtin.NewPlanStore())
+		runCtx = builtin.WithProposals(runCtx, propStore)
 		result, err := a.Run(runCtx, input)
 		if err != nil {
 			log.Fatalf("agent: %v", err)
@@ -239,6 +241,31 @@ func main() {
 			fmt.Printf("thinking: %s\n", result.Thinking)
 		}
 		fmt.Printf("assistant: %s\n\n", result.Reply)
+		// 提议落地（权限横切最小形态，tool-fs.md §4.5）：Run 结束后检查待确认提议——
+		// 展示摘要 + 读用户输入，确认后 ApplyProposed（原子写），拒绝即丢弃。模型不感知该交互。
+		if pend := propStore.Pending(); len(pend) > 0 {
+			fileCfg := &builtin.FileConfig{Root: fileRoot}
+			fmt.Printf("检测到 %d 条待确认改动：\n", len(pend))
+			for _, e := range pend {
+				kind := "写入"
+				if e.Kind == "edit" {
+					kind = "编辑"
+				}
+				fmt.Printf("#%d %s %s\n%s\n应用？[y/N] ", e.ID, kind, e.Path, truncate(e.Content, 200))
+				line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+				ans := strings.ToLower(strings.TrimSpace(line))
+				if ans == "y" || ans == "yes" {
+					if err := builtin.ApplyProposed(fileCfg, e); err != nil {
+						fmt.Printf("  ↳ 落地失败: %v\n", err)
+					} else {
+						fmt.Printf("  ↳ 已应用 #%d（%s）\n", e.ID, e.Path)
+					}
+				} else {
+					fmt.Printf("  ↳ 已拒绝 #%d\n", e.ID)
+				}
+			}
+			propStore.Clear()
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		log.Fatalf("read stdin: %v", err)
