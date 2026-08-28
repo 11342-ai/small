@@ -10,15 +10,15 @@
 
 ## 2. 推荐工具分档
 
-**A 档：无痛扩展（零模块改动）**
+**A 档：无痛扩展（Deps 扩字段即可，不破签名）**
 
-| 工具 | 干什么 | 参考项目 | 依赖 |
-|---|---|---|---|
-| `file_read` | 读任意文本文件（行号/截断） | Claude Code Read、Codex | os，stdlib |
-| `file_list` | 列目录/glob 找文件 | Claude Code Glob、Codex | filepath，stdlib |
-| `doc_search` | 跨目录关键词搜索（Zoo/、代码） | Claude Code Grep、Codex grep | filepath+regex |
-| `web_fetch` | GET URL → 纯文本 | Claude WebFetch、Codex | net/http + 超时/大小上限 |
-| `calculator` | 安全数学表达式求值 | Claude、OpenHands | 自写小求值器（Go 无 eval，工作量较大） |
+| 工具 | 干什么 | 参考项目 | 依赖 | 状态 |
+|---|---|---|---|---|
+| `file_read` | 读任意文本文件（行号/截断） | Claude Code Read、Codex | os + Deps.File 工作区根 | ✅ 已实现 2026-08-25 |
+| `file_list` | 列目录/glob 找文件（支持 `**`） | Claude Code Glob、Codex | filepath + Deps.File | ✅ 已实现 2026-08-25 |
+| `doc_search` | 跨目录关键词搜索（子串，跳隐藏/大文件） | Claude Code Grep、Codex grep | filepath + Deps.File | ✅ 已实现 2026-08-25 |
+| `web_fetch` | GET URL → 纯文本（超时/大小上限/剥标签） | Claude WebFetch、Codex | net/http（无构造依赖） | ✅ 已实现 2026-08-25 |
+| `calculator` | 安全数学表达式求值 | Claude、OpenHands | 自写小求值器（Go 无 eval，工作量较大） | 待定（§7） |
 
 **B 档：触发设计边界（等权限/依赖就绪）**
 
@@ -54,7 +54,7 @@
 | ④ 结果单字符串 | 大文件/结构化输出超 `Data` 上限 | 截断 + 摘要（truncate 思路已有） |
 | ⑤ 无状态 | 跨调用状态（shell 的 cwd）无处安放 | 显式注入，别在工具内藏全局（首个实例：`model/plan.md` 的 ctx 注入） |
 
-关键判断："builtin 追加一个元素"的承诺在**工具只需 tool/memory** 时成立；工具要新依赖类型时扩 `Deps` struct 字段（不破签名）——这是设计里写好的扩展点，不是缺陷。最可能先踩到 ①（file 工具要根目录，已由 deps struct 兜住）与 ③（写文件要审批）。
+关键判断："builtin 追加一个元素"的承诺在**工具只需 tool/memory** 时成立；工具要新依赖类型时扩 `Deps` struct 字段（不破签名）——这是设计里写好的扩展点，不是缺陷。最可能先踩到 ③（写文件要审批）——① 已由 deps struct 兜住并落地（file 工具）。
 
 ## 5. 工作区定位 + 路径约束 ≠ 沙箱（概念辨析）
 
@@ -76,12 +76,12 @@
 
 ## 6. 建议落点
 
-1. 先加 `file_read` + `doc_search`——纯 stdlib、零风险、直接服务"看文档/改代码"核心场景。
-2. 再加 `web_fetch`——单工具高价值，注意超时 + 返回大小上限。
+1. ✅ `file_read` + `file_list` + `doc_search` 已实现（2026-08-25，Deps.File 注入工作区根，路径约束 resolveInRoot）——直接服务"看文档/改代码"核心场景。
+2. ✅ `web_fetch` 已实现（2026-08-25，无构造依赖无条件注册，超时 15s + 大小上限 + 标签剥离）。
 3. ✅ `exec` 最小安全版已实现（2026-08-25，见 §2 B 档）；`file_write` 等 roadmap 安全护栏落地后再上。
-4. ✅ `RegisterBuiltins` 已升 deps struct（`builtin.Deps{Mem, Exec}`，2026-08-25，exec 触发）——新增依赖只需扩 struct 字段，不再改签名。
+4. ✅ `RegisterBuiltins` 已升 deps struct（`builtin.Deps{Mem, Exec, File}`，2026-08-25，exec 触发）——新增依赖只需扩 struct 字段，不再改签名。
 
 ## 7. 待决
 
-- `file_read`/`doc_search` 的搜索根目录：走工作区定位（§5，CWD 往上找 marker），具体 marker 选型（`go.mod` vs `.git`）待定。
+- ✅ `file_read`/`doc_search` 搜索根目录已定案（2026-08-25）：工作区定位 marker = `go.mod` 优先 → `.git` 兜底 → CWD 最后（`main.detectRoot` 实现，见 §5）。
 - `calculator` 求值器实现成本：无 eval，自写小解析器 vs 暂缓，待定。

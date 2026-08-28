@@ -18,8 +18,11 @@ func TestRegisterBuiltins(t *testing.T) {
 	if _, ok := reg.Get("plan"); !ok {
 		t.Error("plan should be registered (无构造依赖)")
 	}
-	// mem/exec 均为 nil：记忆与 exec 工具不注册（退化）。
-	for _, name := range []string{"memory_search", "exec"} {
+	if _, ok := reg.Get("web_fetch"); !ok {
+		t.Error("web_fetch should be registered (无构造依赖)")
+	}
+	// mem/exec/file 均为 nil：记忆/exec/文件工具不注册（退化）。
+	for _, name := range []string{"memory_search", "exec", "file_read", "file_list", "doc_search"} {
 		if _, ok := reg.Get(name); ok {
 			t.Errorf("%s should not be registered without deps", name)
 		}
@@ -52,5 +55,17 @@ func TestRegisterBuiltins_WithExec(t *testing.T) {
 	}
 	if _, ok := reg.Get("exec"); !ok {
 		t.Error("exec should be registered with Exec config")
+	}
+}
+
+func TestRegisterBuiltins_WithFile(t *testing.T) {
+	reg := tool.New()
+	if err := RegisterBuiltins(reg, Deps{File: &FileConfig{Root: t.TempDir()}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, name := range []string{"file_read", "file_list", "doc_search"} {
+		if _, ok := reg.Get(name); !ok {
+			t.Errorf("%s should be registered with File config", name)
+		}
 	}
 }

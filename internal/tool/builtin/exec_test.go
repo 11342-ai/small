@@ -88,15 +88,15 @@ func TestRunExec_Timeout(t *testing.T) {
 	}
 }
 
-func TestTruncateExecOutput(t *testing.T) {
+func TestTruncateOutput(t *testing.T) {
 	short := "hi"
-	if got := truncateExecOutput(short); got != short {
+	if got := truncateOutput(short); got != short {
 		t.Fatalf("短输出不应截断，got %q", got)
 	}
-	long := strings.Repeat("界", execOutputLimit+100) // 中文多字节，验证 rune 安全切分
-	got := truncateExecOutput(long)
-	if len([]rune(got)) != execOutputLimit+7 { // 截断标记 "\n…（已截断）" 为 7 rune
-		t.Fatalf("截断后 rune 数 = %d, want %d", len([]rune(got)), execOutputLimit+7)
+	long := strings.Repeat("界", outputLimit+100) // 中文多字节，验证 rune 安全切分
+	got := truncateOutput(long)
+	if len([]rune(got)) != outputLimit+7 { // 截断标记 "\n…（已截断）" 为 7 rune
+		t.Fatalf("截断后 rune 数 = %d, want %d", len([]rune(got)), outputLimit+7)
 	}
 	if !strings.HasSuffix(got, "（已截断）") {
 		t.Fatalf("截断应带标记，got %q", got[len(got)-20:])

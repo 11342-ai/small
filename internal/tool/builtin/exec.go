@@ -21,9 +21,6 @@ type ExecConfig struct {
 	Confirm func(cmd string, args []string) bool
 }
 
-// execOutputLimit 单次输出上限（字符）：防长输出刷爆上下文（tool-extend.md 边界④）。
-const execOutputLimit = 8000
-
 // defaultExecTimeout exec 默认超时。
 const defaultExecTimeout = 30 * time.Second
 
@@ -84,9 +81,9 @@ func runExec(ctx context.Context, cfg ExecConfig, args json.RawMessage) (tool.Re
 		if runCtx.Err() == context.DeadlineExceeded {
 			return tool.Result{Data: "exec 超时（超过 " + timeout.String() + "）", IsError: true}, nil
 		}
-		return tool.Result{Data: "exec 失败: " + err.Error() + "\n" + truncateExecOutput(string(out)), IsError: true}, nil
+		return tool.Result{Data: "exec 失败: " + err.Error() + "\n" + truncateOutput(string(out)), IsError: true}, nil
 	}
-	return tool.Result{Data: truncateExecOutput(string(out))}, nil
+	return tool.Result{Data: truncateOutput(string(out))}, nil
 }
 
 // execAllowed 判断命令名是否在白名单内（顺序无关，O(n) 对命令数足够）。
@@ -97,13 +94,4 @@ func execAllowed(allow []string, cmd string) bool {
 		}
 	}
 	return false
-}
-
-// truncateExecOutput 输出超限按 rune 截断（防长输出爆上下文；字节切分可能切坏 UTF-8）。
-func truncateExecOutput(s string) string {
-	runes := []rune(s)
-	if len(runes) <= execOutputLimit {
-		return s
-	}
-	return string(runes[:execOutputLimit]) + "\n…（已截断）"
 }
