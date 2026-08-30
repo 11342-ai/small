@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -18,19 +17,9 @@ const (
 	EnvModel = "DEEPSEEK_MODEL"
 	// EnvAPIKey API Key 环境变量。
 	EnvAPIKey = "DEEPSEEK_API_KEY"
-	// EnvSessionDir 会话存储目录环境变量。
-	EnvSessionDir = "SMALL_SESSION_DIR"
-	// EnvMemoryDir 长期记忆目录环境变量。
-	EnvMemoryDir = "SMALL_MEMORY_DIR"
-	// EnvKbDir 知识库目录环境变量（缺省 ~/.small/kb，见 Zoo/model/kb.md）。
-	EnvKbDir = "SMALL_KB_DIR"
-	// EnvConfigFile 配置文件路径覆盖（缺省 ~/.small/config.yml）。
-	EnvConfigFile = "SMALL_CONFIG"
-	// EnvMaxTokens 上下文预算（估算 token，字符近似）环境变量。
-	EnvMaxTokens = "SMALL_MAX_TOKENS"
 	// defaultModel 未设置时的默认模型。
 	defaultModel = "deepseek-v4-pro"
-	// defaultConfigFile 缺省配置文件路径。
+	// defaultConfigFile 配置文件路径（写死，不做环境变量覆盖；对齐微信等把路径定死的做法）。
 	defaultConfigFile = "~/.small/config.yml"
 	// defaultSessionDir 缺省会话存储目录。
 	defaultSessionDir = "~/.small/sessions"
@@ -38,9 +27,9 @@ const (
 	defaultMemoryDir = "~/.small/memory"
 	// defaultKbDir 缺省知识库目录（Zoo/model/kb.md：与 memory 并列的存储部件）。
 	defaultKbDir = "~/.small/kb"
-	// defaultMaxTokens 缺省上下文预算：约 8k token，远低于 64k 上下文，
-	// 预留余量防溢出；本地对话足够。
-	defaultMaxTokens = 8000
+	// defaultMaxTokens 缺省上下文预算：32k token，正好是 64k 上下文的一半，
+	// 预留一半余量防溢出（含回复输出与工具声明）；本地对话足够。
+	defaultMaxTokens = 32768
 )
 
 // Config 是客户端的集中配置，构造后整体向下游注入。
@@ -60,7 +49,7 @@ type Config struct {
 }
 
 // fileConfig 配置文件的可选字段。APIKey 不在此列：机密走环境变量更安全。
-// 环境变量优先于文件（显式注入覆盖持久化配置），文件优先于内置默认值。
+// 目录/预算等以配置文件为准（文件 > 内置默认值）；模型例外，DEEPSEEK_MODEL 仍可覆盖文件。
 type fileConfig struct {
 	Model      string `yaml:"model"`
 	SessionDir string `yaml:"session_dir"`
@@ -70,10 +59,10 @@ type fileConfig struct {
 	MaxTokens *int `yaml:"max_tokens"`
 }
 
-// Load 加载配置：APIKey 必填（环境变量），其余字段按
-// "环境变量 > 配置文件 > 内置默认值" 的优先级合并。
-// 配置文件路径由 SMALL_CONFIG 指定，缺省 ~/.small/config.yml；
-// 文件不存在则忽略（纯环境变量行为），存在但解析失败则报错（配置损坏应暴露而非静默）。
+// Load 加载配置：APIKey 必填（只走环境变量）；目录/预算等字段以配置文件为准，
+// 文件未配置时用内置默认值（不再读环境变量）。模型名例外：DEEPSEEK_MODEL 仍可覆盖文件。
+// 配置文件路径写死 ~/.small/config.yml（不做环境变量覆盖）；
+// 文件不存在则忽略（纯默认值行为），存在但解析失败则报错（配置损坏应暴露而非静默）。
 func Load() (*Config, error) {
 	apiKey := os.Getenv(EnvAPIKey)
 	if apiKey == "" {
@@ -86,49 +75,30 @@ func Load() (*Config, error) {
 	}
 
 	model := firstNonEmpty(os.Getenv(EnvModel), file.Model, defaultModel)
-	sessionDir, err := expandHome(firstNonEmpty(os.Getenv(EnvSessionDir), file.SessionDir, defaultSessionDir))
+	sessionDir, err := expandHome(firstNonEmpty(file.SessionDir, defaultSessionDir))
 	if err != nil {
 		return nil, err
 	}
-	memoryDir, err := expandHome(firstNonEmpty(os.Getenv(EnvMemoryDir), file.MemoryDir, defaultMemoryDir))
+	memoryDir, err := expandHome(firstNonEmpty(file.MemoryDir, defaultMemoryDir))
 	if err != nil {
 		return nil, err
 	}
-	kbDir, err := expandHome(firstNonEmpty(os.Getenv(EnvKbDir), file.KbDir, defaultKbDir))
+	kbDir, err := expandHome(firstNonEmpty(file.KbDir, defaultKbDir))
 	if err != nil {
 		return nil, err
 	}
-	maxTokens, err := resolveMaxTokens(file)
-	if err != nil {
-		return nil, err
+	maxTokens := defaultMaxTokens
+	if file.MaxTokens != nil {
+		// 指针区分"未设置"与"显式 0"：显式 0 = 禁用截断。
+		maxTokens = *file.MaxTokens
 	}
 
 	return &Config{Model: model, APIKey: apiKey, SessionDir: sessionDir, MemoryDir: memoryDir, KbDir: kbDir, MaxTokens: maxTokens}, nil
 }
 
-// resolveMaxTokens 按"环境变量 > 文件 > 默认"解析预算；环境变量非法时显式报错
-// （配置错误应暴露而非静默回退）。
-func resolveMaxTokens(file fileConfig) (int, error) {
-	if env := os.Getenv(EnvMaxTokens); env != "" {
-		n, err := strconv.Atoi(env)
-		if err != nil {
-			return 0, fmt.Errorf("config: %s=%q is not a number", EnvMaxTokens, env)
-		}
-		return n, nil
-	}
-	if file.MaxTokens != nil {
-		return *file.MaxTokens, nil
-	}
-	return defaultMaxTokens, nil
-}
-
-// loadFile 读取可选配置文件；不存在时返回零值（等价于未配置）。
+// loadFile 读取默认配置文件（路径写死 ~/.small/config.yml）；不存在时返回零值（等价于未配置）。
 func loadFile() (fileConfig, error) {
-	path := os.Getenv(EnvConfigFile)
-	if path == "" {
-		path = defaultConfigFile
-	}
-	expanded, err := expandHome(path)
+	expanded, err := expandHome(defaultConfigFile)
 	if err != nil {
 		return fileConfig{}, err
 	}
@@ -161,7 +131,7 @@ func expandHome(p string) (string, error) {
 	return p, nil
 }
 
-// firstNonEmpty 返回第一个非空值（合并优先级：环境变量 > 文件 > 默认）。
+// firstNonEmpty 返回第一个非空值（合并优先级：文件 > 默认；模型为 环境变量 > 文件 > 默认）。
 func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {
 		if v != "" {

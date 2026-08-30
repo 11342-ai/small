@@ -26,23 +26,21 @@ func TestParsePersona(t *testing.T) {
 	}
 }
 
-func TestParsePersonaNameDefaultsToFileStem(t *testing.T) {
-	p, err := parsePersona("scientist.md", []byte("---\ndescription: 严谨\n---\n\n你是科学家。"))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
+// TestParsePersonaNameDefaultsToStem frontmatter 缺 name 与完全无 frontmatter，
+// name 都取文件名 stem，正文原样保留。
+func TestParsePersonaNameDefaultsToStem(t *testing.T) {
+	cases := []struct{ file, data, body string }{
+		{"scientist.md", "---\ndescription: 严谨\n---\n\n你是科学家。", "你是科学家。"},
+		{"onee.md", "你是御姐。", "你是御姐。"},
 	}
-	if p.Name != "scientist" {
-		t.Errorf("name = %q, want file stem", p.Name)
-	}
-}
-
-func TestParsePersonaNoFrontmatter(t *testing.T) {
-	p, err := parsePersona("onee.md", []byte("你是御姐。"))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if p.Name != "onee" || p.SystemPrompt != "你是御姐。" {
-		t.Errorf("parsed = %+v", p)
+	for _, c := range cases {
+		p, err := parsePersona(c.file, []byte(c.data))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if p.Name != strings.TrimSuffix(c.file, ".md") || p.SystemPrompt != c.body {
+			t.Errorf("%s: parsed = %+v", c.file, p)
+		}
 	}
 }
 
@@ -61,23 +59,22 @@ func TestParsePersonaErrors(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsDuplicateName(t *testing.T) {
-	fsys := fstest.MapFS{
-		"personas/default.md": &fstest.MapFile{Data: []byte("---\n---\n\ndefault body")},
-		"personas/a.md":       &fstest.MapFile{Data: []byte("---\nname: dup\n---\n\na body")},
-		"personas/b.md":       &fstest.MapFile{Data: []byte("---\nname: dup\n---\n\nb body")},
+// TestLoadErrors load 的错误场景（MapFS 构造嵌入集合无法出现的错误）。
+func TestLoadErrors(t *testing.T) {
+	tests := map[string]fstest.MapFS{
+		"duplicate name": {
+			"personas/default.md": {Data: []byte("---\n---\n\ndefault body")},
+			"personas/a.md":       {Data: []byte("---\nname: dup\n---\n\na body")},
+			"personas/b.md":       {Data: []byte("---\nname: dup\n---\n\nb body")},
+		},
+		"missing default": {
+			"personas/a.md": {Data: []byte("---\n---\n\na body")},
+		},
 	}
-	if _, err := load(fsys); err == nil {
-		t.Fatal("duplicate name: want error")
-	}
-}
-
-func TestLoadRequiresDefault(t *testing.T) {
-	fsys := fstest.MapFS{
-		"personas/a.md": &fstest.MapFile{Data: []byte("---\n---\n\na body")},
-	}
-	if _, err := load(fsys); err == nil {
-		t.Fatal("missing default: want error")
+	for name, fsys := range tests {
+		if _, err := load(fsys); err == nil {
+			t.Errorf("%s: want error", name)
+		}
 	}
 }
 

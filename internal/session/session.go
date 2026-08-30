@@ -351,5 +351,10 @@ func countLines(path string) int {
 		}
 		n++
 	}
+	// 循环退出可能是读到 EOF，也可能是扫描出错（读错误/单行超 buffer 上限）；
+	// 出错按 0 处理，与"读失败按 0 处理"的注释意图一致，避免返回部分计数误导。
+	if err := sc.Err(); err != nil {
+		return 0
+	}
 	return n
 }

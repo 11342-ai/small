@@ -7,28 +7,32 @@ import (
 	"testing"
 )
 
-// withIsolatedConfig 把配置文件指到临时目录，避免测试受真实 ~/.small/config.yml 干扰。
+// withIsolatedConfig 把 HOME 指到临时目录，让写死的 ~/.small/config.yml 落在临时目录，
+// 避免测试受真实用户配置干扰（配置文件路径已写死，无环境变量可覆盖）。
+// Linux 下 os.UserHomeDir 读 $HOME，因此 t.Setenv 即可生效。
 func withIsolatedConfig(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "config.yml")
-	t.Setenv(EnvConfigFile, path)
-	return path
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".small")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	return filepath.Join(dir, "config.yml")
 }
 
 func TestLoad_RequiresAPIKey(t *testing.T) {
-	t.Setenv(EnvConfigFile, filepath.Join(t.TempDir(), "none.yml"))
 	t.Setenv(EnvAPIKey, "")
 	if _, err := Load(); err == nil {
 		t.Fatal("want error when API key missing")
 	}
 }
 
+// TestLoad_DefaultsWhenOnlyAPIKey 无配置文件（文件缺项/缺失）→ 全部落到内置默认值。
 func TestLoad_DefaultsWhenOnlyAPIKey(t *testing.T) {
 	withIsolatedConfig(t)
 	t.Setenv(EnvAPIKey, "k")
 	t.Setenv(EnvModel, "")
-	t.Setenv(EnvSessionDir, "")
-	t.Setenv(EnvMaxTokens, "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -52,29 +56,12 @@ func TestLoad_DefaultsWhenOnlyAPIKey(t *testing.T) {
 	}
 }
 
-func TestLoad_MaxTokensEnvOverridesFile(t *testing.T) {
-	path := withIsolatedConfig(t)
-	if err := os.WriteFile(path, []byte("max_tokens: 500\n"), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	t.Setenv(EnvAPIKey, "k")
-	t.Setenv(EnvMaxTokens, "1234")
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.MaxTokens != 1234 {
-		t.Errorf("max tokens = %d, want env 1234", cfg.MaxTokens)
-	}
-}
-
 func TestLoad_MaxTokensFromFileAndZeroDisables(t *testing.T) {
 	path := withIsolatedConfig(t)
 	if err := os.WriteFile(path, []byte("max_tokens: 0\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	t.Setenv(EnvAPIKey, "k")
-	t.Setenv(EnvMaxTokens, "")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -85,67 +72,45 @@ func TestLoad_MaxTokensFromFileAndZeroDisables(t *testing.T) {
 	}
 }
 
-func TestLoad_MaxTokensInvalidEnvErrors(t *testing.T) {
-	withIsolatedConfig(t)
-	t.Setenv(EnvAPIKey, "k")
-	t.Setenv(EnvMaxTokens, "abc")
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "not a number") {
-		t.Fatalf("want invalid-number error, got %v", err)
-	}
-}
-
-func TestLoad_EnvOverridesFile(t *testing.T) {
+// TestLoad_Priority 验证完整优先级链：DEEPSEEK_MODEL（环境变量）> config.yml > 内置默认值；
+// 目录/预算只认 config.yml，环境变量不再参与。
+func TestLoad_Priority(t *testing.T) {
 	path := withIsolatedConfig(t)
-	if err := os.WriteFile(path, []byte("model: from-file\nsession_dir: /file/dir\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("model: from-file\nsession_dir: /file/dir\nmemory_dir: /file/mem\nkb_dir: /file/kb\nmax_tokens: 500\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	t.Setenv(EnvAPIKey, "k")
-	t.Setenv(EnvModel, "from-env")
-	t.Setenv(EnvSessionDir, "/env/dir")
-	t.Setenv(EnvMemoryDir, "/env/mem")
-	t.Setenv(EnvKbDir, "/env/kb")
-	t.Setenv(EnvMaxTokens, "")
 
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Model != "from-env" || cfg.SessionDir != "/env/dir" {
-		t.Errorf("got model=%q dir=%q, want env values", cfg.Model, cfg.SessionDir)
-	}
-	if cfg.MemoryDir != "/env/mem" {
-		t.Errorf("memory dir = %q, want env /env/mem", cfg.MemoryDir)
-	}
-	if cfg.KbDir != "/env/kb" {
-		t.Errorf("kb dir = %q, want env /env/kb", cfg.KbDir)
-	}
-}
-
-func TestLoad_FileOverridesDefault(t *testing.T) {
-	path := withIsolatedConfig(t)
-	if err := os.WriteFile(path, []byte("model: from-file\nsession_dir: /file/dir\n"), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	t.Setenv(EnvAPIKey, "k")
+	// 阶段一：不设模型环境变量 → 全部以 config.yml 为准（文件 > 默认）。
 	t.Setenv(EnvModel, "")
-	t.Setenv(EnvSessionDir, "")
-	t.Setenv(EnvMaxTokens, "")
-
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Model != "from-file" || cfg.SessionDir != "/file/dir" {
-		t.Errorf("got model=%q dir=%q, want file values", cfg.Model, cfg.SessionDir)
+	if cfg.Model != "from-file" {
+		t.Errorf("model = %q, want file from-file", cfg.Model)
 	}
-}
+	if cfg.SessionDir != "/file/dir" || cfg.MemoryDir != "/file/mem" || cfg.KbDir != "/file/kb" {
+		t.Errorf("dirs = %q %q %q, want file values", cfg.SessionDir, cfg.MemoryDir, cfg.KbDir)
+	}
+	if cfg.MaxTokens != 500 {
+		t.Errorf("max tokens = %d, want file 500", cfg.MaxTokens)
+	}
 
-func TestLoad_MissingConfigFileIgnored(t *testing.T) {
-	withIsolatedConfig(t) // 指向不存在的文件
-	t.Setenv(EnvAPIKey, "k")
-	t.Setenv(EnvMaxTokens, "")
-	if _, err := Load(); err != nil {
+	// 阶段二：设置模型环境变量 → 仅模型被覆盖（环境变量 > 文件），目录/预算不变。
+	t.Setenv(EnvModel, "from-env")
+	cfg, err = Load()
+	if err != nil {
 		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Model != "from-env" {
+		t.Errorf("model = %q, want env from-env", cfg.Model)
+	}
+	if cfg.SessionDir != "/file/dir" || cfg.MemoryDir != "/file/mem" || cfg.KbDir != "/file/kb" {
+		t.Errorf("dirs = %q %q %q, want file values", cfg.SessionDir, cfg.MemoryDir, cfg.KbDir)
+	}
+	if cfg.MaxTokens != 500 {
+		t.Errorf("max tokens = %d, want file 500", cfg.MaxTokens)
 	}
 }
 
@@ -155,7 +120,6 @@ func TestLoad_BrokenConfigFileErrors(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 	t.Setenv(EnvAPIKey, "k")
-	t.Setenv(EnvMaxTokens, "")
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "parse") {
 		t.Fatalf("want parse error, got %v", err)
 	}

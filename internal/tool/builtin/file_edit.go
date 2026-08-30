@@ -109,6 +109,7 @@ func runFileEdit(cfg *FileConfig, args json.RawMessage) (tool.Result, error) {
 	if err != nil {
 		return tool.Result{Data: "读取失败: " + err.Error(), IsError: true}, nil
 	}
+
 	// 多组替换（行尾归一化空间内）：propose_file_edit 共用同一逻辑（tool-fs.md §4.3/§4.5）。
 	content, done, failed := applyReplacements(data, in.Replacements, in.AllowMultiple)
 	if done == 0 {

@@ -8,7 +8,7 @@
 small/
 ├── main.go                 # 组合根：装配全部依赖 + 多轮对话 demo
 ├── internal/
-│   ├── config/             # 配置：环境变量优先 + 可选 config.yml，构造注入下游
+│   ├── config/             # 配置：config.yml 为主 + 内置默认值兜底，构造注入下游 ()
 │   ├── provider/           # 传输层：DeepSeek HTTP/SSE 调用、重试、超时（含 retry 子包）
 │   ├── agent/              # 领域层：多轮对话循环/历史/自动持久化/预算截断；adapter.go 翻译 provider
 │   ├── session/            # 会话持久化：JSONL 每会话一文件，agent 的存储部件
@@ -46,12 +46,19 @@ gofmt -l .                          # 格式检查（无输出为干净）
 | 环境变量 | 含义 | 缺省 |
 |---|---|---|
 | `DEEPSEEK_API_KEY` | 鉴权密钥（必填） | 无 |
-| `DEEPSEEK_MODEL` | 模型名 | `deepseek-v4-pro` |
-| `SMALL_SESSION_DIR` | 会话存储目录 | `~/.small/sessions` |
-| `SMALL_MEMORY_DIR` | 长期记忆目录（`MEMORY.md` + `memory/*.md`） | `~/.small/memory` |
-| `SMALL_KB_DIR` | 知识库目录（md 文件树，见 `Zoo/model/kb.md`） | `~/.small/kb` |
-| `SMALL_CONFIG` | 配置文件路径 | `~/.small/config.yml` |
-| `SMALL_MAX_TOKENS` | 上下文预算（估算 token，显式 `0` 禁用截断） | `8000` |
+| `DEEPSEEK_MODEL` | 模型名（可覆盖 config.yml 的 model） | `deepseek-v4-pro` |
+
+目录与上下文预算以 `config.yml` 为准（配置项缺失时用内置默认值，不读环境变量）。
+配置文件路径写死为 `~/.small/config.yml`（不做环境变量覆盖）：
+
+```yaml
+# ~/.small/config.yml（可选，路径写死）
+session_dir: ~/.small/sessions   # 会话存储目录
+memory_dir: ~/.small/memory      # 长期记忆目录（MEMORY.md + memory/*.md）
+kb_dir: ~/.small/kb              # 知识库目录（md 文件树，见 Zoo/model/kb.md）
+max_tokens: 32768                # 上下文预算（估算 token，显式 0 禁用截断）
+model: deepseek-v4-pro           # 可选；DEEPSEEK_MODEL 可覆盖
+```
 
 示例：
 
@@ -124,7 +131,7 @@ cloc . --by-file --not-match-f='_test\.go$'                 # 逐文件明细
 | 工具注入形态 | 结构依赖显式入参（agent 收注册表、adapter 收冻结声明），行为开关走 Option | 构造契约可见协作对象；配置类开关不破签名 |
 | 会话持久化 | JSONL 每会话一文件 + Run 成功自动 append（不引 SQLite） | 零依赖、崩溃只丢半行、续聊场景够用；要查询再迁 |
 | 会话恢复 | 组合根 `store.Load` + `WithHistory` 注入 | New 不返回 error，文件错误属系统边界，组合根 fail fast |
-| 配置来源 | 环境变量优先 + 可选 `~/.small/config.yml`（yaml.v3）；机密只走环境变量 | 配置项增长后可持久化，API key 不落配置文件 |
+| 配置来源 | 目录/预算以 `~/.small/config.yml` 为准（缺省用内置默认值，路径写死）；模型可用 `DEEPSEEK_MODEL` 覆盖；机密只走环境变量 | 配置项增长后可持久化，API key 不落配置文件 |
 | 上下文压缩 | 第一版只做"预算截断 + 真实 usage 校准"（`WithTokenBudget`），摘要后续增强 | 真实 usage（流式 `include_usage`）优先、字符估算兜底；截断同步重写（Rewrite）防"复活" |
 | 输出形态 | `Result{Reply, Thinking}` struct | 类型安全、可扩展 |
 | thinking | `WithThinking` 默认关 | 显式开启才付代价 |
