@@ -13,6 +13,7 @@ small/
 │   ├── agent/              # 领域层：多轮对话循环/历史/自动持久化/预算截断；adapter.go 翻译 provider
 │   ├── session/            # 会话持久化：JSONL 每会话一文件，agent 的存储部件
 │   ├── memory/             # 长期记忆：Markdown 文件 + bigram 关键词索引 + 归档层受控追加，存储部件
+│   ├── kb/                 # 知识库：goldmark 解析 md 文件树 → 节点/边/反链 + 无环校验，存储部件（见 Zoo/model/kb.md）
 │   ├── persona/            # 人格：go:embed 内置人格文件（frontmatter + 正文），提示词源部件
 │   ├── policy/             # 权限：Pass/Ask 类型（命令与工具共享判定，安全护栏地基，见 cli.md §5）
 │   └── tool/               # 工具：声明/执行/注册（Registry）+ 内置工具（builtin）
@@ -48,6 +49,7 @@ gofmt -l .                          # 格式检查（无输出为干净）
 | `DEEPSEEK_MODEL` | 模型名 | `deepseek-v4-pro` |
 | `SMALL_SESSION_DIR` | 会话存储目录 | `~/.small/sessions` |
 | `SMALL_MEMORY_DIR` | 长期记忆目录（`MEMORY.md` + `memory/*.md`） | `~/.small/memory` |
+| `SMALL_KB_DIR` | 知识库目录（md 文件树，见 `Zoo/model/kb.md`） | `~/.small/kb` |
 | `SMALL_CONFIG` | 配置文件路径 | `~/.small/config.yml` |
 | `SMALL_MAX_TOKENS` | 上下文预算（估算 token，显式 `0` 禁用截断） | `8000` |
 

@@ -21,6 +21,7 @@ import (
 	"small/internal/agent"
 	"small/internal/command"
 	"small/internal/config"
+	"small/internal/kb"
 	"small/internal/memory"
 	"small/internal/persona"
 	"small/internal/provider"
@@ -107,6 +108,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("memory store: %v", err)
 	}
+	kbStore, err := kb.New(cfg.KbDir)
+	if err != nil {
+		log.Fatalf("kb store: %v", err)
+	}
 	reg := tool.New()
 	// 文件类工具（tool-extend.md A 档）：工作区根经 detectRoot 注入（路径 policy，见 §5）。
 	fileRoot := detectRoot()
@@ -114,6 +119,7 @@ func main() {
 	// 权限横切层，exec 在权限表中为 Ask，见 Zoo/model/policy.md）。
 	if err := builtin.RegisterBuiltins(reg, builtin.Deps{
 		Mem:  mem,
+		Kb:   kbStore,
 		File: &builtin.FileConfig{Root: fileRoot},
 		Exec: &builtin.ExecConfig{
 			Allow:   execAllow,
@@ -125,10 +131,12 @@ func main() {
 	// 系统提示三段式装配（契约层→人格层→记忆层）收敛到 persona.Compose，main 只提供素材不手拼
 	// （见 Zoo/model/persona.md §4）。角色句（"你是一个简洁的助手…"）已移入 personas/default.md：
 	// 选别的人格时不继承"简洁"约束。组合根拼字符串即可，agent 循环零改动。
-	base := "可用工具：echo（原样返回文本）、exec（执行白名单内只读命令，每次需用户确认）、plan（维护多步任务的分步执行清单）、file_read（读工作区文件，支持 offset/limit 窗口化）、file_list（列目录/找文件）、file_tree（目录树速览工作区结构）、doc_search（工作区关键词搜索）、file_write（写工作区文件，整体覆盖，每次需用户确认）、file_edit（按字符串替换编辑工作区文件，每次需用户确认）、propose_file_write（提议写文件，确认后才落地）、propose_file_edit（提议编辑文件，确认后才落地）、web_fetch（抓取网页转文本）、memory_search（检索长期记忆）、memory_get（读取记忆块）、memory_save（记住新事实）。" +
+	base := "可用工具：echo（原样返回文本）、exec（执行白名单内只读命令，每次需用户确认）、plan（维护多步任务的分步执行清单）、file_read（读工作区文件，支持 offset/limit 窗口化）、file_list（列目录/找文件）、file_tree（目录树速览工作区结构）、doc_search（工作区关键词搜索）、file_write（写工作区文件，整体覆盖，每次需用户确认）、file_edit（按字符串替换编辑工作区文件，每次需用户确认）、propose_file_write（提议写文件，确认后才落地）、propose_file_edit（提议编辑文件，确认后才落地）、web_fetch（抓取网页转文本）、memory_search（检索长期记忆）、memory_get（读取记忆块）、memory_save（记住新事实）、kb_tree（知识库结构树/域视图查询）、kb_refs（知识库引用报告，删除知识点前必查）、kb_check（知识库巡检）、kb_write（把知识点写入知识库，自动生成 frontmatter 与认知深度）。" +
 		"回答涉及先前决策、偏好、待办或项目事实时，先调用 memory_search 检索；" +
 		"用户提供链接并希望了解其内容时，用 web_fetch 读取；" +
-		"仅当用户明确要求记住某事时，才调用 memory_save 写入长期记忆。"
+		"仅当用户明确要求记住某事时，才调用 memory_save 写入长期记忆；" +
+		"涉及知识库的结构/归属/引用关系时用 kb_tree/kb_refs，删除或整理知识点前先 kb_refs 查影响面、改完用 kb_check 巡检；" +
+		"用户要求把知识点记入知识库时，先向用户确认所属域（新域需批准）再调 kb_write。"
 	memBlock := ""
 	if boot := loadBootstrapMemory(cfg.MemoryDir); boot != "" {
 		memBlock = "<memory>\n" + boot + "\n</memory>"

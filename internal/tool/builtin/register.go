@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"small/internal/kb"
 	"small/internal/memory"
 	"small/internal/tool"
 )
@@ -10,6 +11,8 @@ import (
 type Deps struct {
 	// Mem 记忆仓库：nil 则不注册记忆工具。
 	Mem *memory.Store
+	// Kb 知识库索引：nil 则不注册知识库工具（kb_tree/kb_refs/kb_check）。
+	Kb *kb.Store
 	// Exec exec 工具配置：nil 则不注册 exec（无白名单配置即退化）。
 	Exec *ExecConfig
 	// File 文件类工具配置（工作区根）：nil 则不注册文件工具。
@@ -29,6 +32,10 @@ func RegisterBuiltins(reg *tool.Registry, deps Deps) error {
 	if deps.Mem != nil {
 		// 记忆工具依赖仓库实例：装配了仓库才注册（mem 传 nil 退化，只注册其余工具）。
 		tools = append(tools, MemorySearch(deps.Mem), MemoryGet(deps.Mem), MemorySave(deps.Mem))
+	}
+	if deps.Kb != nil {
+		// 知识库工具同样结构注入：索引就绪才注册（kb 传 nil 退化）。
+		tools = append(tools, KbTree(deps.Kb), KbRefs(deps.Kb), KbCheck(deps.Kb), KbWrite(deps.Kb))
 	}
 	if deps.Exec != nil {
 		tools = append(tools, Exec(*deps.Exec))

@@ -3,6 +3,7 @@ package builtin
 import (
 	"testing"
 
+	"small/internal/kb"
 	"small/internal/memory"
 	"small/internal/policy"
 	"small/internal/tool"
@@ -22,8 +23,8 @@ func TestRegisterBuiltins(t *testing.T) {
 	if _, ok := reg.Get("web_fetch"); !ok {
 		t.Error("web_fetch should be registered (无构造依赖)")
 	}
-	// mem/exec/file 均为 nil：记忆/exec/文件工具不注册（退化）。
-	for _, name := range []string{"memory_search", "exec", "file_read", "file_list", "doc_search"} {
+	// mem/exec/file/kb 均为 nil：记忆/exec/文件/知识库工具不注册（退化）。
+	for _, name := range []string{"memory_search", "exec", "file_read", "file_list", "doc_search", "kb_tree", "kb_refs", "kb_check", "kb_write"} {
 		if _, ok := reg.Get(name); ok {
 			t.Errorf("%s should not be registered without deps", name)
 		}
@@ -59,6 +60,25 @@ func TestRegisterBuiltins_WithExec(t *testing.T) {
 	}
 }
 
+func TestRegisterBuiltins_WithKB(t *testing.T) {
+	store, err := kb.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("kb.New: %v", err)
+	}
+	reg := tool.New()
+	if err := RegisterBuiltins(reg, Deps{Kb: store}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, name := range []string{"kb_tree", "kb_refs", "kb_check", "kb_write"} {
+		if _, ok := reg.Get(name); !ok {
+			t.Errorf("%s should be registered with Kb store", name)
+		}
+	}
+	if _, ok := reg.Get("memory_search"); ok {
+		t.Error("memory_search should not be registered without Mem")
+	}
+}
+
 func TestRegisterBuiltins_WithFile(t *testing.T) {
 	reg := tool.New()
 	if err := RegisterBuiltins(reg, Deps{File: &FileConfig{Root: t.TempDir()}}); err != nil {
@@ -80,13 +100,14 @@ func TestRegisterBuiltins_PermissionTableComplete(t *testing.T) {
 	}
 	for _, name := range []string{"echo", "plan", "get_current_time", "web_fetch", "file_read",
 		"file_list", "file_tree", "doc_search", "propose_file_write", "propose_file_edit",
-		"memory_search", "memory_get", "memory_save", "exec", "file_write", "file_edit"} {
+		"memory_search", "memory_get", "memory_save", "exec", "file_write", "file_edit",
+		"kb_tree", "kb_refs", "kb_check", "kb_write"} {
 		if ToolPermissions[name] == "" {
 			t.Errorf("%s 未登记权限", name)
 		}
 	}
 	// Ask 语义：写/执行类工具必须 Ask（不是 Pass）。
-	for _, name := range []string{"exec", "file_write", "file_edit"} {
+	for _, name := range []string{"exec", "file_write", "file_edit", "kb_write"} {
 		if ToolPermissions[name] != policy.Ask {
 			t.Errorf("%s 应为 Ask，got %s", name, ToolPermissions[name])
 		}

@@ -22,6 +22,8 @@ const (
 	EnvSessionDir = "SMALL_SESSION_DIR"
 	// EnvMemoryDir 长期记忆目录环境变量。
 	EnvMemoryDir = "SMALL_MEMORY_DIR"
+	// EnvKbDir 知识库目录环境变量（缺省 ~/.small/kb，见 Zoo/model/kb.md）。
+	EnvKbDir = "SMALL_KB_DIR"
 	// EnvConfigFile 配置文件路径覆盖（缺省 ~/.small/config.yml）。
 	EnvConfigFile = "SMALL_CONFIG"
 	// EnvMaxTokens 上下文预算（估算 token，字符近似）环境变量。
@@ -34,6 +36,8 @@ const (
 	defaultSessionDir = "~/.small/sessions"
 	// defaultMemoryDir 缺省长期记忆目录。
 	defaultMemoryDir = "~/.small/memory"
+	// defaultKbDir 缺省知识库目录（Zoo/model/kb.md：与 memory 并列的存储部件）。
+	defaultKbDir = "~/.small/kb"
 	// defaultMaxTokens 缺省上下文预算：约 8k token，远低于 64k 上下文，
 	// 预留余量防溢出；本地对话足够。
 	defaultMaxTokens = 8000
@@ -49,6 +53,8 @@ type Config struct {
 	SessionDir string
 	// MemoryDir 长期记忆目录（memory.New 用它建仓库）。
 	MemoryDir string
+	// KbDir 知识库目录（kb.New 用它建索引；md 文件树，文件夹纯归置）。
+	KbDir string
 	// MaxTokens 上下文预算（agent.WithTokenBudget）；<=0 表示不启用截断。
 	MaxTokens int
 }
@@ -59,6 +65,7 @@ type fileConfig struct {
 	Model      string `yaml:"model"`
 	SessionDir string `yaml:"session_dir"`
 	MemoryDir  string `yaml:"memory_dir"`
+	KbDir      string `yaml:"kb_dir"`
 	// 指针区分"未设置"与"显式 0"（显式 0 = 禁用截断，未设置 = 用默认值）。
 	MaxTokens *int `yaml:"max_tokens"`
 }
@@ -87,12 +94,16 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	kbDir, err := expandHome(firstNonEmpty(os.Getenv(EnvKbDir), file.KbDir, defaultKbDir))
+	if err != nil {
+		return nil, err
+	}
 	maxTokens, err := resolveMaxTokens(file)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Config{Model: model, APIKey: apiKey, SessionDir: sessionDir, MemoryDir: memoryDir, MaxTokens: maxTokens}, nil
+	return &Config{Model: model, APIKey: apiKey, SessionDir: sessionDir, MemoryDir: memoryDir, KbDir: kbDir, MaxTokens: maxTokens}, nil
 }
 
 // resolveMaxTokens 按"环境变量 > 文件 > 默认"解析预算；环境变量非法时显式报错

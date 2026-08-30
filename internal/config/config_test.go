@@ -44,6 +44,9 @@ func TestLoad_DefaultsWhenOnlyAPIKey(t *testing.T) {
 	if cfg.MemoryDir != filepath.Join(home, ".small", "memory") {
 		t.Errorf("memory dir = %q, want ~/.small/memory", cfg.MemoryDir)
 	}
+	if cfg.KbDir != filepath.Join(home, ".small", "kb") {
+		t.Errorf("kb dir = %q, want ~/.small/kb", cfg.KbDir)
+	}
 	if cfg.MaxTokens != defaultMaxTokens {
 		t.Errorf("max tokens = %d, want default %d", cfg.MaxTokens, defaultMaxTokens)
 	}
@@ -100,6 +103,7 @@ func TestLoad_EnvOverridesFile(t *testing.T) {
 	t.Setenv(EnvModel, "from-env")
 	t.Setenv(EnvSessionDir, "/env/dir")
 	t.Setenv(EnvMemoryDir, "/env/mem")
+	t.Setenv(EnvKbDir, "/env/kb")
 	t.Setenv(EnvMaxTokens, "")
 
 	cfg, err := Load()
@@ -111,6 +115,9 @@ func TestLoad_EnvOverridesFile(t *testing.T) {
 	}
 	if cfg.MemoryDir != "/env/mem" {
 		t.Errorf("memory dir = %q, want env /env/mem", cfg.MemoryDir)
+	}
+	if cfg.KbDir != "/env/kb" {
+		t.Errorf("kb dir = %q, want env /env/kb", cfg.KbDir)
 	}
 }
 
