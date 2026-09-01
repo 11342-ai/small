@@ -27,9 +27,16 @@ const (
 	defaultMemoryDir = "~/.small/memory"
 	// defaultKbDir 缺省知识库目录（Zoo/model/kb.md：与 memory 并列的存储部件）。
 	defaultKbDir = "~/.small/kb"
+	// defaultCacheDir 缺省文档解析缓存目录（tool-lit.md：doc_parse 产物落盘处，
+	// 受控目录，解析只读+写缓存 = Pass 权限）。
+	defaultCacheDir = "~/.small/cache"
 	// defaultMaxTokens 缺省上下文预算：32k token，正好是 64k 上下文的一半，
 	// 预留一半余量防溢出（含回复输出与工具声明）；本地对话足够。
 	defaultMaxTokens = 32768
+	// defaultMaxToolRounds 缺省单次 Run 工具调用轮次上限（pdf-workflow.md §5）：
+	// 20 轮，覆盖 PDF 全链路（parse→clean→read→整理→write，大文件分批）；
+	// 显式 0 = 不限（agent 层用兜底上限防死循环）。
+	defaultMaxToolRounds = 20
 )
 
 // Config 是客户端的集中配置，构造后整体向下游注入。
@@ -44,6 +51,10 @@ type Config struct {
 	MemoryDir string
 	// KbDir 知识库目录（kb.New 用它建索引；md 文件树，文件夹纯归置）。
 	KbDir string
+	// CacheDir 文档解析缓存目录（doc_parse 产物落盘处，受控目录）。
+	CacheDir string
+	// MaxToolRounds 单次 Run 工具调用轮次上限（agent.WithMaxToolRounds）；<=0 表示不限。
+	MaxToolRounds int
 	// MaxTokens 上下文预算（agent.WithTokenBudget）；<=0 表示不启用截断。
 	MaxTokens int
 }
@@ -55,8 +66,10 @@ type fileConfig struct {
 	SessionDir string `yaml:"session_dir"`
 	MemoryDir  string `yaml:"memory_dir"`
 	KbDir      string `yaml:"kb_dir"`
-	// 指针区分"未设置"与"显式 0"（显式 0 = 禁用截断，未设置 = 用默认值）。
-	MaxTokens *int `yaml:"max_tokens"`
+	CacheDir   string `yaml:"cache_dir"`
+	// 指针区分"未设置"与"显式 0"（显式 0 = 不限，未设置 = 用默认值；对齐 max_tokens）。
+	MaxTokens     *int `yaml:"max_tokens"`
+	MaxToolRounds *int `yaml:"max_tool_rounds"`
 }
 
 // Load 加载配置：APIKey 必填（只走环境变量）；目录/预算等字段以配置文件为准，
@@ -87,13 +100,22 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	cacheDir, err := expandHome(firstNonEmpty(file.CacheDir, defaultCacheDir))
+	if err != nil {
+		return nil, err
+	}
 	maxTokens := defaultMaxTokens
 	if file.MaxTokens != nil {
 		// 指针区分"未设置"与"显式 0"：显式 0 = 禁用截断。
 		maxTokens = *file.MaxTokens
 	}
+	maxRounds := defaultMaxToolRounds
+	if file.MaxToolRounds != nil {
+		// 显式 0 = 不限（agent 层用兜底上限防死循环）。
+		maxRounds = *file.MaxToolRounds
+	}
 
-	return &Config{Model: model, APIKey: apiKey, SessionDir: sessionDir, MemoryDir: memoryDir, KbDir: kbDir, MaxTokens: maxTokens}, nil
+	return &Config{Model: model, APIKey: apiKey, SessionDir: sessionDir, MemoryDir: memoryDir, KbDir: kbDir, CacheDir: cacheDir, MaxTokens: maxTokens, MaxToolRounds: maxRounds}, nil
 }
 
 // loadFile 读取默认配置文件（路径写死 ~/.small/config.yml）；不存在时返回零值（等价于未配置）。

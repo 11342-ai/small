@@ -30,6 +30,21 @@ func TestRunExec_NotAllowed(t *testing.T) {
 	}
 }
 
+// TestExecAllowed 白名单判定（pdf-workflow.md §6：find/cp 已入 main 白名单）。
+func TestExecAllowed(t *testing.T) {
+	allow := []string{"ls", "find", "cp"}
+	for _, c := range []string{"ls", "find", "cp"} {
+		if !execAllowed(allow, c) {
+			t.Errorf("%s 应在白名单内", c)
+		}
+	}
+	for _, c := range []string{"rm", "mkdir", "mv", "sh", "rm -rf"} {
+		if execAllowed(allow, c) {
+			t.Errorf("%s 不应在白名单内", c)
+		}
+	}
+}
+
 func TestRunExec_Success(t *testing.T) {
 	res, err := runExec(context.Background(), ExecConfig{Allow: []string{"echo"}}, execArgs("echo", "hello"))
 	if err != nil {

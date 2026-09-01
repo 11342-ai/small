@@ -1,7 +1,7 @@
 # 文件系统工具族（读增强 + 写族）方案
 
 > 位置：`internal/tool/builtin`（file.go 扩展 + 新增 file_write.go / file_edit.go）
-> 状态：**A 档 + B 档全部实现（2026-08-28）**：file_write / file_edit / file_read 窗口化 / 敏感文件防护 / 常量忽略集 / file_tree / gitignore 解析 / propose_file_write/edit；原待决 3 项已定案（§10）
+> 状态：**A 档 + B 档全部实现（2026-08-28）**：file_write / file_edit / file_read 窗口化 / 敏感文件防护 / 常量忽略集 / file_tree / gitignore 解析 / propose_file_write/edit；原待决 3 项已定案（§10）；**读工具路径放宽（2026-09-01，§5/§11）**
 > 关联：`model/tool-extend.md`（B 档写工具卡审批）；`model/plan.md`（ctx 注入先例）；`model/cli.md`（Permission 种子）；`CLAUDE.md`（红线与约定）
 > 对应清单：read_file 窗口化 / write_file / str_replace / propose_* / read_subtree / code_search 语义层 / read_docs
 
@@ -14,6 +14,7 @@
   - ✅ **敏感文件防护**（`.env*` 拒绝读取，fail-closed）
   - ✅ **常量忽略集**（file_list/doc_search/file_tree 遍历时跳过 node_modules/dist/*.min.js/.map 等）
 - 本次追加落地（B 档转本次）：**file_tree**（目录树预算读）、**gitignore 解析**（遍历遵循 .gitignore）、**propose_file_write / propose_file_edit**（提议暂存 → 组合根确认后落地，权限横切最小形态）。
+- 追加落地（2026-09-01）：**读工具路径放宽**——file_read/file_list/file_tree/doc_search 允许访问工作区外绝对路径（用户显式有访问某目录的需求时，如 ~/Pdf），敏感系统目录黑名单 fail-closed（§5）；写工具（file_write/file_edit/propose_*）保持严格工作区约束不变；base 提示词加软确认约束（访问工作区外前先征得用户同意，Codex 式问答）。
 - 暂缓 0 件；其余不做项见 §2 C 档。
 - 不做（在 §2 给出理由）：**缩进容错**、**去空白兜底**、**referencedBy 符号引用**、**BPE token 估算**、**四级截断/符号分数/内存文件树**、**code_search 语义层**、**read_docs 专用工具**。
 - 安全总纲：**写工具 fail-closed 同 exec**——`FileConfig.Confirm` 回调为 nil 则不注册写工具（读工具照常）；每步确认 + 原子写 + 路径约束（复用 resolveInRoot）。
@@ -128,7 +129,7 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| path | string | ✓ | 相对工作区根 |
+| path | string | ✓ | 相对工作区根，或工作区外绝对路径（仅非敏感目录，2026-09-01 放宽） |
 | offset | int | 否 | 起始行号（1-based），缺省 1 |
 | limit | int | 否 | 读取行数，缺省读到文件尾（仍受既有 truncateOutput 截断） |
 
@@ -191,7 +192,9 @@
 |---|---|---|
 | fail-closed | `FileConfig.Confirm == nil` → 不注册写工具（读工具照常） | 单测：无 Confirm 时 reg.Get 不到 file_write/file_edit |
 | 每步确认 | 每次写前 Confirm 回调展示 path + 变更摘要 | 单测：Confirm 返回 false → 拒绝且文件内容不变 |
-| 路径约束 | 复用 resolveInRoot，写路径同样必须在工作区内 | 单测：越界写路径拒绝 |
+| 路径约束（写） | 复用 resolveInRoot（严格），写路径必须在工作区内 | 单测：越界写路径拒绝 |
+| 路径约束（读） | resolveReadPath（2026-09-01 放宽）：工作区内放行；工作区外绝对路径须过敏感黑名单（fail-closed） | 单测：工作区外非敏感放行 / /etc、/proc 等拒绝 |
+| 敏感目录黑名单 | 只读放宽后，/etc /proc /sys /usr /bin /sbin /boot /dev /root /var 前缀命中即拒绝 | 单测：isSensitivePath 各目录命中 |
 | 原子写 | 同目录 temp + Rename，防半截文件 | 单测：写入后内容完整；中途失败不留 temp |
 | 唯一性 | old_string 多命中拒绝（0 命中报未找到） | 单测：N=0/N=2 报错，N=1 成功 |
 | 敏感文件 | `.env*` 拒绝读取（fail-closed），机密不进上下文 | 单测：file_read 对 .env 返回 IGNORED |
@@ -251,3 +254,11 @@
 9. ✅ builtin/propose.go：ProposedStore + WithProposals + propose_file_write/edit + ApplyProposed（2026-08-28）；file_edit.go 抽 applyReplacements 共用。
 10. ✅ main.go：每轮注入 ProposedStore，Run 结束后确认落地（2026-08-28）。
 11. ✅ 单测（§8）+ `go test -race ./...` / `go vet` / `gofmt` 全绿（2026-08-28）。
+12. ✅ 读工具路径放宽（2026-09-01）：resolveReadPath 新增（工作区外放行 + 敏感目录黑名单），file_read/file_list/doc_search/file_tree 换用；写工具保持 resolveInRoot 严格；base 提示词加软确认约束；单测补充（§5 读路径/黑名单）。
+13. ✅ 软确认提示词 + 合并门槛验证（2026-09-01）。
+
+## 12. 待决追加（2026-09-01）
+
+1. ✅ 读工具放宽范围：file_read/file_list/file_tree/doc_search 全部（用户确认）。
+2. ✅ 安全防护：敏感系统目录黑名单 fail-closed（/etc /proc /sys /usr /bin /sbin /boot /dev /root /var；用户确认）。
+3. ✅ 工作区外访问确认：软确认（base 提示词约束模型先征得用户同意，Codex 式问答；用户确认）。不做硬确认——现有权限表按工具名静态，路径级动态 Ask 需改权限模型，量级不匹配本期。

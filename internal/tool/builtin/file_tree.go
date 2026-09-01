@@ -19,11 +19,11 @@ func FileTree(cfg *FileConfig) tool.Tool {
 	return tool.NewFunc(
 		tool.Spec{
 			Name:        "file_tree",
-			Description: "以目录树速览工作区结构：目录列名字（带 /），文件附带前几行内容摘要；按 budget 字符预算截断（超预算省略并提示）。path 缺省工作区根。用于快速建立项目结构感，精读仍用 file_read。",
+			Description: "以目录树速览工作区结构：目录列名字（带 /），文件附带前几行内容摘要；按 budget 字符预算截断（超预算省略并提示）。path 缺省工作区根，或用户明确要求访问的工作区外目录绝对路径。用于快速建立项目结构感，精读仍用 file_read。",
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {
-					"path": {"type": "string", "description": "目录路径（相对工作区根），缺省工作区根"},
+					"path": {"type": "string", "description": "目录路径（相对工作区根或工作区外绝对路径），缺省工作区根"},
 					"budget": {"type": "integer", "description": "输出字符预算，缺省 8000"}
 				},
 				"required": []
@@ -54,7 +54,7 @@ func runFileTree(cfg *FileConfig, args json.RawMessage) (tool.Result, error) {
 	if p == "" {
 		p = "."
 	}
-	abs, err := resolveInRoot(cfg.Root, p)
+	abs, err := resolveReadPath(cfg.Root, p)
 	if err != nil {
 		return tool.Result{Data: err.Error(), IsError: true}, nil
 	}

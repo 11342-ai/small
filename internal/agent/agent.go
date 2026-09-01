@@ -83,8 +83,14 @@ type ToolObserver func(ToolCallEvent)
 // 编译期断言：确保适配器在编译期满足端口（实现见 adapter.go）。
 var _ Completer = (*providerChat)(nil)
 
-// maxToolRounds 单次 Run 内工具调用的最大轮数，防御模型无限循环调用工具。
-const maxToolRounds = 8
+// defaultMaxToolRounds 缺省单次 Run 内工具调用轮次上限：20（pdf-workflow.md §5）。
+// 原 8 轮在 PDF 全链路（parse→clean→read→整理→write，大文件还分批）不够用；
+// 可经 WithMaxToolRounds 覆盖（config.yml max_tool_rounds）。
+const defaultMaxToolRounds = 20
+
+// maxToolRoundsCeiling 显式 0（不限）时的兜底上限：防模型无限循环调用工具拖死会话，
+// 同时保证"不限"语义对正常场景不构成约束。
+const maxToolRoundsCeiling = 1 << 30
 
 // Agent 持有对话历史并驱动多轮循环：每调用一次 Run 完成一轮 user→assistant。
 // store/sid 非空时启用会话持久化：Run 成功结束自动把本轮新增历史追加落盘（见 persist.go）。
@@ -103,6 +109,7 @@ type Agent struct {
 	observe     ToolObserver                 // 工具调用观察者；nil 时不触发（nil-safe 回调约定）
 	perms       map[string]policy.Permission // 工具权限表（按工具名）；nil = 全 Pass（旧行为）
 	confirm     func(name string) bool       // Ask 工具确认回调；nil-safe，Ask 且 nil → 拒绝
+	maxRounds   int                          // 单次 Run 工具调用轮次上限；<=0 视为不限（用兜底上限）
 }
 
 // Option 以函数式选项配置 Agent。
@@ -155,10 +162,22 @@ func WithToolConfirm(fn func(name string) bool) Option {
 	return func(a *Agent) { a.confirm = fn }
 }
 
+// WithMaxToolRounds 覆盖单次 Run 内工具调用轮次上限（pdf-workflow.md §5）。
+// n<=0 视为不限（用兜底上限 maxToolRoundsCeiling 防死循环）；缺省 defaultMaxToolRounds。
+func WithMaxToolRounds(n int) Option {
+	return func(a *Agent) {
+		if n <= 0 {
+			a.maxRounds = maxToolRoundsCeiling
+			return
+		}
+		a.maxRounds = n
+	}
+}
+
 // New 构造 Agent。结构协作对象以显式参数注入（chat、tools、store），便于测试时替换 mock；
 // tools 为 nil 时退化为纯对话，store 为 nil 时不做持久化。行为开关走 Option。
 func New(chat Completer, tools *tool.Registry, store *session.Store, opts ...Option) *Agent {
-	a := &Agent{chat: chat, tools: tools, store: store}
+	a := &Agent{chat: chat, tools: tools, store: store, maxRounds: defaultMaxToolRounds}
 	for _, o := range opts {
 		o(a)
 	}
@@ -185,7 +204,7 @@ func (a *Agent) guard(call ToolCall) (tool.Result, bool) {
 //  1. 将用户输入追加进历史；
 //  2. 把完整历史（含系统提示）交给 Completer 得到结果；
 //  3. 若结果请求了工具调用，则执行每个调用并把结果回灌进历史，再回到步骤 2，
-//     直到模型不再请求工具（最多 maxToolRounds 轮，防死循环）；
+//     直到模型不再请求工具（最多 a.maxRounds 轮，防死循环）；
 //  4. 将最终助手回复正文追加进历史（思考过程不回传模型，只作当轮输出）；
 //  5. 返回结果。
 //
@@ -197,7 +216,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (Result, error) {
 		return Result{}, err
 	}
 
-	for round := 0; round < maxToolRounds; round++ {
+	for round := 0; round < a.maxRounds; round++ {
 		result, err := a.chat.Complete(ctx, a.allTurns())
 		if err != nil {
 			return Result{}, err
@@ -255,7 +274,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (Result, error) {
 			a.history = append(a.history, Turn{Role: "tool", ToolCallID: call.ID, Content: res.Data})
 		}
 	}
-	return Result{}, fmt.Errorf("agent: exceeded %d tool rounds", maxToolRounds)
+	return Result{}, fmt.Errorf("agent: exceeded %d tool rounds", a.maxRounds)
 }
 
 // History 返回当前对话历史（拷贝，防止外部篡改内部状态）。

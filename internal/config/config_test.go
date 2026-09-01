@@ -51,8 +51,14 @@ func TestLoad_DefaultsWhenOnlyAPIKey(t *testing.T) {
 	if cfg.KbDir != filepath.Join(home, ".small", "kb") {
 		t.Errorf("kb dir = %q, want ~/.small/kb", cfg.KbDir)
 	}
+	if cfg.CacheDir != filepath.Join(home, ".small", "cache") {
+		t.Errorf("cache dir = %q, want ~/.small/cache", cfg.CacheDir)
+	}
 	if cfg.MaxTokens != defaultMaxTokens {
 		t.Errorf("max tokens = %d, want default %d", cfg.MaxTokens, defaultMaxTokens)
+	}
+	if cfg.MaxToolRounds != defaultMaxToolRounds {
+		t.Errorf("max tool rounds = %d, want default %d", cfg.MaxToolRounds, defaultMaxToolRounds)
 	}
 }
 
@@ -76,7 +82,7 @@ func TestLoad_MaxTokensFromFileAndZeroDisables(t *testing.T) {
 // 目录/预算只认 config.yml，环境变量不再参与。
 func TestLoad_Priority(t *testing.T) {
 	path := withIsolatedConfig(t)
-	if err := os.WriteFile(path, []byte("model: from-file\nsession_dir: /file/dir\nmemory_dir: /file/mem\nkb_dir: /file/kb\nmax_tokens: 500\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("model: from-file\nsession_dir: /file/dir\nmemory_dir: /file/mem\nkb_dir: /file/kb\ncache_dir: /file/cache\nmax_tokens: 500\nmax_tool_rounds: 50\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	t.Setenv(EnvAPIKey, "k")
@@ -90,11 +96,14 @@ func TestLoad_Priority(t *testing.T) {
 	if cfg.Model != "from-file" {
 		t.Errorf("model = %q, want file from-file", cfg.Model)
 	}
-	if cfg.SessionDir != "/file/dir" || cfg.MemoryDir != "/file/mem" || cfg.KbDir != "/file/kb" {
-		t.Errorf("dirs = %q %q %q, want file values", cfg.SessionDir, cfg.MemoryDir, cfg.KbDir)
+	if cfg.SessionDir != "/file/dir" || cfg.MemoryDir != "/file/mem" || cfg.KbDir != "/file/kb" || cfg.CacheDir != "/file/cache" {
+		t.Errorf("dirs = %q %q %q %q, want file values", cfg.SessionDir, cfg.MemoryDir, cfg.KbDir, cfg.CacheDir)
 	}
 	if cfg.MaxTokens != 500 {
 		t.Errorf("max tokens = %d, want file 500", cfg.MaxTokens)
+	}
+	if cfg.MaxToolRounds != 50 {
+		t.Errorf("max tool rounds = %d, want file 50", cfg.MaxToolRounds)
 	}
 
 	// 阶段二：设置模型环境变量 → 仅模型被覆盖（环境变量 > 文件），目录/预算不变。
@@ -106,11 +115,30 @@ func TestLoad_Priority(t *testing.T) {
 	if cfg.Model != "from-env" {
 		t.Errorf("model = %q, want env from-env", cfg.Model)
 	}
-	if cfg.SessionDir != "/file/dir" || cfg.MemoryDir != "/file/mem" || cfg.KbDir != "/file/kb" {
-		t.Errorf("dirs = %q %q %q, want file values", cfg.SessionDir, cfg.MemoryDir, cfg.KbDir)
+	if cfg.SessionDir != "/file/dir" || cfg.MemoryDir != "/file/mem" || cfg.KbDir != "/file/kb" || cfg.CacheDir != "/file/cache" {
+		t.Errorf("dirs = %q %q %q %q, want file values", cfg.SessionDir, cfg.MemoryDir, cfg.KbDir, cfg.CacheDir)
 	}
 	if cfg.MaxTokens != 500 {
 		t.Errorf("max tokens = %d, want file 500", cfg.MaxTokens)
+	}
+	if cfg.MaxToolRounds != 50 {
+		t.Errorf("max tool rounds = %d, want file 50", cfg.MaxToolRounds)
+	}
+}
+
+// TestLoad_MaxToolRoundsZeroUnlimited 显式 0 = 不限（区别于未设置用默认值）。
+func TestLoad_MaxToolRoundsZeroUnlimited(t *testing.T) {
+	path := withIsolatedConfig(t)
+	if err := os.WriteFile(path, []byte("max_tool_rounds: 0\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv(EnvAPIKey, "k")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MaxToolRounds != 0 {
+		t.Errorf("max tool rounds = %d, want explicit 0 (unlimited)", cfg.MaxToolRounds)
 	}
 }
 

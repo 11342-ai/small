@@ -22,6 +22,7 @@ type FileConfig struct {
 
 // resolveInRoot 把相对（或 Root 内绝对）路径解析为 Root 内的绝对路径。
 // 越界（.. 逃逸 / 绝对路径在 Root 外）返回 error——路径约束，防工具读工作区外文件。
+// 写工具（file_write/file_edit/propose_*）沿用此严格语义；只读工具用 resolveReadPath。
 func resolveInRoot(root, p string) (string, error) {
 	if root == "" {
 		root = "."
@@ -42,14 +43,57 @@ func resolveInRoot(root, p string) (string, error) {
 	return abs, nil
 }
 
-// FileRead 读取工作区内文本文件（带行号、窗口化、敏感文件防护）。
+// sensitiveRoots 只读放宽后的敏感系统目录黑名单（fail-closed，tool-fs.md §5）：
+// 命中前缀即拒绝，防模型被诱导读取系统文件（/etc 配置、/proc /sys 内核接口、
+// /usr /bin /sbin 系统程序、/boot /dev 系统设备、/root 其他身份 home、/var 日志等）。
+var sensitiveRoots = []string{
+	"/etc", "/proc", "/sys", "/usr", "/bin", "/sbin", "/boot", "/dev", "/root", "/var",
+}
+
+// isSensitivePath 判断绝对路径是否命中敏感目录黑名单（目录边界匹配：
+// /etc 命中 /etc/passwd，但不命中 /etcetera）。
+func isSensitivePath(abs string) bool {
+	clean := filepath.Clean(abs)
+	for _, s := range sensitiveRoots {
+		if clean == s || strings.HasPrefix(clean, s+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveReadPath 只读路径解析（tool-fs.md §5，2026-09-01 放宽）：工作区内放行；
+// 工作区外绝对路径须过敏感目录黑名单（fail-closed，命中即拒绝）。相对路径越界
+// 逃逸解析为绝对路径后走同一判断——用户显式要访问的目录（如 ~/Pdf）放行，
+// 系统敏感目录挡住。读工具（file_read/file_list/doc_search/file_tree）统一用它。
+func resolveReadPath(root, p string) (string, error) {
+	if root == "" {
+		root = "."
+	}
+	var abs string
+	if filepath.IsAbs(p) {
+		abs = filepath.Clean(p)
+	} else {
+		abs = filepath.Clean(filepath.Join(root, p))
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return abs, nil // 工作区内（含根本身）
+	}
+	if isSensitivePath(abs) {
+		return "", fmt.Errorf("路径越界：%q 位于敏感系统目录，拒绝访问", p)
+	}
+	return abs, nil
+}
+
+// FileRead 读取文本文件（带行号、窗口化、敏感文件防护）。
 // 窗口化（tool-fs.md §4.1）：offset 起始行号（1-based，缺省 1）+ limit 行数（缺省读到文件尾）；
 // 超界给提示、limit 截断给续读建议，引导模型低成本续读而非误判"读完了"。
 func FileRead(cfg *FileConfig) tool.Tool {
 	return tool.NewFunc(
 		tool.Spec{
 			Name:        "file_read",
-			Description: "读取工作区内文本文件内容（带行号；支持 offset/limit 窗口化：offset 起始行号 1-based，limit 行数；超长截断；.env 等敏感文件拒绝读取）。path 相对工作区根（如 internal/agent/agent.go）或工作区内的绝对路径；仅允许访问工作区内文件。用于查看文档、代码、配置。",
+			Description: "读取文本文件内容（带行号；支持 offset/limit 窗口化：offset 起始行号 1-based，limit 行数；超长截断；.env 等敏感文件拒绝读取）。path 相对工作区根（如 internal/agent/agent.go）或绝对路径（工作区内，或用户明确要求访问的工作区外目录，如 ~/Pdf；系统敏感目录如 /etc /proc /usr 拒绝）。用于查看文档、代码、配置。",
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {
@@ -80,7 +124,7 @@ func runFileRead(cfg *FileConfig, args json.RawMessage) (tool.Result, error) {
 	if err := json.Unmarshal(args, &in); err != nil {
 		return tool.Result{Data: "参数错误: " + err.Error(), IsError: true}, nil
 	}
-	abs, err := resolveInRoot(cfg.Root, strings.TrimSpace(in.Path))
+	abs, err := resolveReadPath(cfg.Root, strings.TrimSpace(in.Path))
 	if err != nil {
 		return tool.Result{Data: err.Error(), IsError: true}, nil
 	}
@@ -130,12 +174,12 @@ func runFileRead(cfg *FileConfig, args json.RawMessage) (tool.Result, error) {
 	return tool.Result{Data: truncateOutput(out)}, nil
 }
 
-// FileList 列目录或按 glob 找文件（相对 Root，支持 ** 跨目录）。
+// FileList 列目录或按 glob 找文件（相对 Root 或工作区外绝对路径，支持 ** 跨目录）。
 func FileList(cfg *FileConfig) tool.Tool {
 	return tool.NewFunc(
 		tool.Spec{
 			Name:        "file_list",
-			Description: "列出工作区内文件：path 为目录时列出其下条目；含 glob 通配符（* ? **）时按模式递归找文件（如 internal/**/*.go）。path 相对工作区根。用于了解项目结构、找文件。",
+			Description: "列出文件：path 为目录时列出其下条目；含 glob 通配符（* ? **）时按模式递归找文件（如 internal/**/*.go）。path 相对工作区根，或用户明确要求访问的工作区外目录绝对路径（如 ~/Pdf；系统敏感目录拒绝）。用于了解项目结构、找文件。",
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {
@@ -197,7 +241,7 @@ func runFileList(cfg *FileConfig, args json.RawMessage) (tool.Result, error) {
 	if p == "" {
 		p = "."
 	}
-	abs, err := resolveInRoot(cfg.Root, p)
+	abs, err := resolveReadPath(cfg.Root, p)
 	if err != nil {
 		return tool.Result{Data: err.Error(), IsError: true}, nil
 	}
@@ -289,14 +333,14 @@ func globMatch(pattern, name string) bool {
 	return match(0, 0)
 }
 
-// DocSearch 工作区关键词搜索（子串匹配，不区分大小写；跳过隐藏目录与大文件）。
-// path 可限定搜索范围（文件或子目录，相对工作区根；显式点名不受忽略集/gitignore 限制，
-// 对齐 file_read 语义）；缺省全工作区。
+// DocSearch 关键词搜索（子串匹配，不区分大小写；跳过隐藏目录与大文件）。
+// path 可限定搜索范围（文件或子目录，相对工作区根或工作区外绝对路径；
+// 显式点名不受忽略集/gitignore 限制，对齐 file_read 语义）；缺省全工作区。
 func DocSearch(cfg *FileConfig) tool.Tool {
 	return tool.NewFunc(
 		tool.Spec{
 			Name:        "doc_search",
-			Description: "在工作区文本文件中按关键词搜索（子串匹配，不区分大小写；跳过隐藏目录、忽略集目录/文件（node_modules/dist/*.min.js 等）与超 512KB 文件），返回 top-N 命中（相对路径 + 行号 + 片段）。path 可限定搜索范围（文件或子目录，如 internal/agent 或 README.md），缺省全工作区。用于找文档/代码中提到某概念的位置。",
+			Description: "在文本文件中按关键词搜索（子串匹配，不区分大小写；跳过隐藏目录、忽略集目录/文件（node_modules/dist/*.min.js 等）与超 512KB 文件），返回 top-N 命中（相对路径 + 行号 + 片段）。path 可限定搜索范围（文件或子目录，如 internal/agent 或 README.md，或用户明确要求访问的工作区外目录绝对路径），缺省全工作区。用于找文档/代码中提到某概念的位置。",
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {
@@ -350,7 +394,7 @@ func runDocSearch(cfg *FileConfig, args json.RawMessage) (tool.Result, error) {
 	// 用户明确要搜它就搜）；其下内容照常过滤。
 	start := root
 	if p := strings.TrimSpace(in.Path); p != "" {
-		abs, err := resolveInRoot(cfg.Root, p)
+		abs, err := resolveReadPath(cfg.Root, p)
 		if err != nil {
 			return tool.Result{Data: err.Error(), IsError: true}, nil
 		}

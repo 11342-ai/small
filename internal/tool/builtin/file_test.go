@@ -51,6 +51,83 @@ func TestResolveInRoot(t *testing.T) {
 	}
 }
 
+// TestResolveReadPath 只读放宽语义（tool-fs.md §5，2026-09-01）：
+// 工作区内放行；工作区外非敏感路径放行（用户文档目录）；敏感系统目录拒绝。
+func TestResolveReadPath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "ws")
+	_ = os.MkdirAll(root, 0o755)
+
+	// 工作区内（相对/绝对）放行。
+	if _, err := resolveReadPath(root, "a/b.go"); err != nil {
+		t.Errorf("工作区内相对路径应放行: %v", err)
+	}
+	if _, err := resolveReadPath(root, filepath.Join(root, "x.md")); err != nil {
+		t.Errorf("工作区内绝对路径应放行: %v", err)
+	}
+	// 工作区外非敏感路径放行（用户文档目录场景，如 ~/Pdf）。
+	outside := filepath.Join(t.TempDir(), "Pdf")
+	_ = os.MkdirAll(outside, 0o755)
+	if abs, err := resolveReadPath(root, outside); err != nil || abs != outside {
+		t.Errorf("工作区外非敏感路径应放行: %v %v", abs, err)
+	}
+	// 相对 .. 逃逸到非敏感路径也放行（同一黑名单语义）。
+	if _, err := resolveReadPath(root, "../x.txt"); err != nil {
+		t.Errorf("逃逸到非敏感路径应放行: %v", err)
+	}
+	// 敏感系统目录拒绝（绝对与相对逃逸都拦）。
+	for _, p := range []string{"/etc/passwd", "/proc/self/status", "/usr/bin/env", "/var/log/syslog", "/root/.bashrc", "/boot/grub.cfg"} {
+		if _, err := resolveReadPath(root, p); err == nil {
+			t.Errorf("敏感路径 %q 应拒绝", p)
+		}
+	}
+	// 相对逃逸到敏感路径应拒绝：动态上溯到根再进入 /etc（不依赖 TempDir 深度）。
+	up := ""
+	for d := root; filepath.Dir(d) != d; d = filepath.Dir(d) {
+		up = filepath.Join(up, "..")
+	}
+	if _, err := resolveReadPath(root, filepath.Join(up, "etc", "passwd")); err == nil {
+		t.Error("逃逸到敏感路径应拒绝")
+	}
+}
+
+// TestIsSensitivePath 黑名单边界匹配：/etc 命中 /etc/passwd，不误伤 /etcetera、/home。
+func TestIsSensitivePath(t *testing.T) {
+	for _, p := range []string{"/etc", "/etc/passwd", "/proc/1", "/sys", "/usr/local", "/bin/sh", "/sbin/init", "/boot", "/dev/null", "/root", "/var/log"} {
+		if !isSensitivePath(p) {
+			t.Errorf("%q 应命中敏感黑名单", p)
+		}
+	}
+	for _, p := range []string{"/etcetera", "/home/cxr", "/home/cxr/Pdf", "/tmp", "/usr-local"} {
+		if isSensitivePath(p) {
+			t.Errorf("%q 不应命中敏感黑名单", p)
+		}
+	}
+}
+
+// TestRunFileRead_OutsideWorkspace file_read 读工作区外非敏感文件成功、敏感路径拒绝。
+func TestRunFileRead_OutsideWorkspace(t *testing.T) {
+	root := newFileWorkspace(t)
+	outside := t.TempDir()
+	outFile := filepath.Join(outside, "note.md")
+	if err := os.WriteFile(outFile, []byte("工作区外内容\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg := &FileConfig{Root: root}
+
+	res, err := runFileRead(cfg, json.RawMessage(`{"path":"`+outFile+`"}`))
+	if err != nil || res.IsError || !strings.Contains(res.Data, "工作区外内容") {
+		t.Errorf("读工作区外非敏感文件应成功: %v %q", err, res.Data)
+	}
+	res, err = runFileRead(cfg, json.RawMessage(`{"path":"/etc/passwd"}`))
+	if err != nil || !res.IsError || !strings.Contains(res.Data, "敏感") {
+		t.Errorf("读敏感路径应拒绝: %v %q", err, res.Data)
+	}
+	// 写工具仍严格：file_write 工作区外路径拒绝（回归，tool-fs.md §5 路径约束写）。
+	if res, err := runFileWrite(cfg, json.RawMessage(`{"path":"`+outFile+`","content":"x"}`)); err != nil || !res.IsError || !strings.Contains(res.Data, "越界") {
+		t.Errorf("写工作区外路径应拒绝: %v %q", err, res.Data)
+	}
+}
+
 func TestRunFileRead(t *testing.T) {
 	root := newFileWorkspace(t)
 	cfg := &FileConfig{Root: root}
@@ -68,9 +145,10 @@ func TestRunFileRead(t *testing.T) {
 		t.Fatalf("相对子路径读取失败：res=%+v err=%v", res, err)
 	}
 
-	res, err = runFileRead(cfg, json.RawMessage(`{"path":"../etc/passwd"}`))
-	if err != nil || !res.IsError || !strings.Contains(res.Data, "越界") {
-		t.Fatalf("越界应拒绝，got res=%+v err=%v", res, err)
+	// 敏感系统目录拒绝（放宽后仍 fail-closed，tool-fs.md §5）。
+	res, err = runFileRead(cfg, json.RawMessage(`{"path":"/etc/passwd"}`))
+	if err != nil || !res.IsError || !strings.Contains(res.Data, "敏感") {
+		t.Fatalf("敏感路径应拒绝，got res=%+v err=%v", res, err)
 	}
 
 	res, err = runFileRead(cfg, json.RawMessage(`{"path":"no-such.md"}`))

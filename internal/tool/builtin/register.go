@@ -17,6 +17,8 @@ type Deps struct {
 	Exec *ExecConfig
 	// File 文件类工具配置（工作区根）：nil 则不注册文件工具。
 	File *FileConfig
+	// Cache 文档解析工具配置（缓存根）：nil 则不注册 doc_* 工具（tool-lit.md §6）。
+	Cache *LitConfig
 }
 
 // RegisterBuiltins 把全部内置工具批量注册进 reg。
@@ -43,6 +45,10 @@ func RegisterBuiltins(reg *tool.Registry, deps Deps) error {
 	if deps.File != nil {
 		tools = append(tools, FileRead(deps.File), FileList(deps.File), DocSearch(deps.File), FileTree(deps.File),
 			ProposeFileWrite(deps.File), ProposeFileEdit(deps.File), FileEdit(deps.File), FileWrite(deps.File))
+	}
+	if deps.Cache != nil {
+		// 文档解析工具依赖缓存根：配置了才注册（cache 传 nil 退化，只注册其余工具）。
+		tools = append(tools, LitParse(deps.Cache), LitRead(deps.Cache), LitClean(deps.Cache))
 	}
 	if err := reg.RegisterAll(tools...); err != nil {
 		return err

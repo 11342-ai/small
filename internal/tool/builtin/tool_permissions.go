@@ -32,6 +32,9 @@ var ToolPermissions = map[string]policy.Permission{
 	"exec":               policy.Ask,  // 有副作用 + 越界面大，必须每步确认
 	"file_write":         policy.Ask,
 	"file_edit":          policy.Ask,
+	"doc_parse":          policy.Pass, // 解析只读 + 写受控缓存目录（tool-lit.md §5，类比 memory_save 写归档层）
+	"doc_read":           policy.Pass, // 只读缓存产物，无副作用
+	"doc_clean":          policy.Pass, // 原地清洗缓存产物（受控缓存目录内），无工作区副作用
 }
 
 // validateToolPermissions 校验：注册的每个工具都必须在权限表内——防"新增工具漏登记 →

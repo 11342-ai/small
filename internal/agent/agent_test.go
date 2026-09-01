@@ -245,8 +245,8 @@ func TestAgent_RunExceedsMaxRounds(t *testing.T) {
 	if err := reg.Register(scriptTool()); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	// 模型每轮都请求工具：必须被 maxToolRounds 兜住，否则死循环。
-	results := make([]Result, maxToolRounds)
+	// 模型每轮都请求工具：必须被轮次上限兜住，否则死循环。
+	results := make([]Result, defaultMaxToolRounds)
 	for i := range results {
 		results[i] = Result{ToolCalls: []ToolCall{toolCall("c", "echo", `{"v":"x"}`)}}
 	}
@@ -254,11 +254,41 @@ func TestAgent_RunExceedsMaxRounds(t *testing.T) {
 	a := New(script, reg, nil)
 
 	_, err := a.Run(context.Background(), "hi")
-	if err == nil || !strings.Contains(err.Error(), "exceeded 8 tool rounds") {
+	if err == nil || !strings.Contains(err.Error(), "exceeded 20 tool rounds") {
 		t.Fatalf("want max-rounds error, got %v", err)
 	}
-	if script.calls != maxToolRounds {
-		t.Errorf("completer calls = %d, want %d", script.calls, maxToolRounds)
+	if script.calls != defaultMaxToolRounds {
+		t.Errorf("completer calls = %d, want %d", script.calls, defaultMaxToolRounds)
+	}
+}
+
+// TestAgent_WithMaxToolRounds Option 覆盖轮次上限（pdf-workflow.md §5）：
+// n=2 时第 3 次工具请求被兜住；n=0（不限）时按兜底上限跑。
+func TestAgent_WithMaxToolRounds(t *testing.T) {
+	reg := tool.New()
+	if err := reg.Register(scriptTool()); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	// 显式 n=2：results 给 3 个，实际只执行 2 轮。
+	results := make([]Result, 3)
+	for i := range results {
+		results[i] = Result{ToolCalls: []ToolCall{toolCall("c", "echo", `{"v":"x"}`)}}
+	}
+	script := &scriptCompleter{results: results}
+	a := New(script, reg, nil, WithMaxToolRounds(2))
+	_, err := a.Run(context.Background(), "hi")
+	if err == nil || !strings.Contains(err.Error(), "exceeded 2 tool rounds") {
+		t.Fatalf("want exceeded 2 rounds, got %v", err)
+	}
+	if script.calls != 2 {
+		t.Errorf("completer calls = %d, want 2", script.calls)
+	}
+	// n=0（不限）：结果耗尽后正常结束（无工具请求 → 返回空回复不报错）。
+	results2 := []Result{{Reply: "done"}}
+	script2 := &scriptCompleter{results: results2}
+	a2 := New(script2, reg, nil, WithMaxToolRounds(0))
+	if _, err := a2.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("n=0 不限不应报错: %v", err)
 	}
 }
 
