@@ -109,3 +109,10 @@ func (a *Agent) SetSystemPrompt(p string) { a.system = p }
 
 - `/tools` 是否带详情参数：YAGNI，先列名字。
 - `doc <path>` 命令归属：kb.md 阶段一，依赖 glamour，量级匹配后再进命令表。
+
+## 11. 输入提示符（2026-09-01）
+
+- 每次轮到用户输入主命令时，先打印 `>>> `（带尾随空格）再读 stdin——readline 式提示，用户明确知道当前可输入；任务执行完回到等待态同样显示。
+- 仅主输入行（main 循环 scanner.Scan 前）；Ask 确认（"确认执行 xxx？[y/N]"）与 propose 确认保持各自文案，不加前缀（职责清晰，不混淆）。
+- 落点：main.go 主循环——把 `for scanner.Scan()` 改为"先打印提示符再 Scan"。
+- 决策记录（2026-09-01 用户确认）：`>>> ` 带尾随空格；仅主输入行。

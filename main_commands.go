@@ -59,6 +59,24 @@ func cmdTools(reg *tool.Registry) command.CommandSpec {
 	}
 }
 
+// cmdPdf 显式进入 pdf 工作流分支（Zoo/model/workflow.md §4.1 命令通道）：
+// 校验文档路径参数后，把一条"按 pdf 工作流处理该文档"的用户消息注入 agent 循环
+// （Run 成功返回注入消息 + 哨兵 errInject，main 循环检测后当作用户输入送 Run，
+// 走正常路径含 plan/proposals ctx 与持久化）。命令本身无副作用（Perm Pass）。
+func cmdPdf() command.CommandSpec {
+	return command.CommandSpec{
+		Name: "/pdf", Usage: "显式进入 pdf 工作流处理文档：/pdf <文档路径>",
+		Run: func(_ context.Context, args []string) (string, error) {
+			if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+				return "", errors.New("用法：/pdf <文档路径>（如 /pdf ~/Pdf/报告.pdf）")
+			}
+			path := strings.Join(args, " ") // 路径可能含空格，按原始参数重新拼接
+			msg := "请按 pdf 工作流处理文档：" + path + "（用户已通过 /pdf 命令显式进入 pdf 分支）"
+			return msg, errInject
+		},
+	}
+}
+
 // cmdClear 清空当前会话（删除会话文件）。破坏性命令，Perm=Ask 需确认。
 func cmdClear(a *agent.Agent) command.CommandSpec {
 	return command.CommandSpec{

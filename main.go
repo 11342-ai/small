@@ -29,6 +29,7 @@ import (
 	"small/internal/tool"
 	"small/internal/tool/builtin"
 	"small/internal/trace"
+	"small/internal/workflow"
 )
 
 func main() {
@@ -112,6 +113,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("kb store: %v", err)
 	}
+	// 工作流分支（workflow.md §3）：embed 资产解析（坏文件 = 开发错误 fail fast），
+	// 分支清单渲染进 base 提示词（契约层），模型按触发条件自动进入对应分支。
+	wfMgr, err := workflow.Load()
+	if err != nil {
+		log.Fatalf("load workflows: %v", err)
+	}
 	reg := tool.New()
 	// 文件类工具（tool-extend.md A 档）：工作区根经 detectRoot 注入（路径 policy，见 §5）。
 	fileRoot := detectRoot()
@@ -141,6 +148,9 @@ func main() {
 		"用户要求把知识点记入知识库时，先向用户确认所属域（新域需批准）再调 kb_write；" +
 		"用户要求解析 PDF/Word 等文档时用 doc_parse，解析后先 doc_clean 清洗噪声再 doc_read 细读；整理文档前先询问用户在原文件直接整理还是新开文件；" +
 		"访问工作区外路径（如 ~/Pdf）前，先向用户说明要访问的目录/文件并征得同意，确认后再访问；系统敏感目录（/etc /proc /usr 等）一律不访问。"
+	// 工作流分支清单（workflow.md §3.3）：注入"可用工作流分支"段，模型按触发条件
+	// 自动进入对应分支（如 PDF 解析任务 → pdf 分支），稳定处理而非临场发挥。
+	base += wfMgr.RenderBranch()
 	memBlock := ""
 	if boot := loadBootstrapMemory(cfg.MemoryDir); boot != "" {
 		memBlock = "<memory>\n" + boot + "\n</memory>"
@@ -208,13 +218,20 @@ func main() {
 	cmdReg.Register(cmdTools(reg))
 	cmdReg.Register(cmdClear(a))
 	cmdReg.Register(cmdPersona(a, mgr, store, id, compose, &p, &metaNeeded))
+	cmdReg.Register(cmdPdf())
 
 	// 4. 多轮对话循环：stdin 逐行输入，"exit" 退出。
 	//    Agent.Run 每轮追加历史并推进一轮；持久化由 agent 在 Run 成功时自动落盘。
 	fmt.Println("开始多轮对话（输入 exit 退出，/help 查看命令）：")
 	scanner := bufio.NewScanner(os.Stdin)
 	ctx := context.Background()
-	for scanner.Scan() {
+	for {
+		// 输入提示符（cli.md §11）：每次轮到用户输入主命令时打印，任务完成后
+		// 回到等待态同样显示——readline 式提示，用户明确知道当前可输入。
+		fmt.Print(">>> ")
+		if !scanner.Scan() {
+			break
+		}
 		input := strings.TrimSpace(scanner.Text())
 		if input == "" {
 			continue
@@ -227,14 +244,21 @@ func main() {
 			if errors.Is(err, errExit) {
 				break
 			}
-			if err != nil {
-				fmt.Printf("%v\n", err)
+			if errors.Is(err, errInject) {
+				// 命令注入（workflow.md §4.1）：/pdf 等命令把消息注入 agent 循环，
+				// 落到下方 Run 路径（含 meta 定型与 plan/proposals ctx）。
+				if output == "" {
+					continue // 注入消息为空则忽略（防御，正常不会发生）
+				}
+				input = output
+			} else {
+				if err != nil {
+					fmt.Printf("%v\n", err)
+				} else if output != "" {
+					fmt.Println(output)
+				}
 				continue
 			}
-			if output != "" {
-				fmt.Println(output)
-			}
-			continue
 		}
 		// 新建会话定型：首条消息前写 meta（定型点 = 第一条消息，见 model/cli.md §6）。
 		if metaNeeded {
@@ -289,6 +313,10 @@ func main() {
 
 // errExit 退出信号：/exit 命令通过哨兵错误让组合根跳出循环（命令系统不感知 I/O）。
 var errExit = errors.New("exit")
+
+// errInject 命令注入信号（workflow.md §4.1）：/pdf 等命令成功后返回注入消息 + 该哨兵，
+// 组合根把注入消息当作用户输入送 agent（走正常 Run 路径，含 plan/proposals ctx 与持久化）。
+var errInject = errors.New("inject-agent-message")
 
 // execAllow exec 工具默认白名单（只读命令起步；find/cp 为 PDF 管理等动作所需，
 // exec 本身是 Ask 每步确认，cp 等写操作有确认门兜底，pdf-workflow.md §6）。
