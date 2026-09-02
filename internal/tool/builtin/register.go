@@ -44,7 +44,8 @@ func RegisterBuiltins(reg *tool.Registry, deps Deps) error {
 	}
 	if deps.File != nil {
 		tools = append(tools, FileRead(deps.File), FileList(deps.File), DocSearch(deps.File), FileTree(deps.File),
-			ProposeFileWrite(deps.File), ProposeFileEdit(deps.File), FileEdit(deps.File), FileWrite(deps.File))
+			ProposeFileWrite(deps.File), ProposeFileEdit(deps.File), FileEdit(deps.File), FileWrite(deps.File),
+			FileDiff(deps.File))
 	}
 	if deps.Cache != nil {
 		// 文档解析工具依赖缓存根：配置了才注册（cache 传 nil 退化，只注册其余工具）。

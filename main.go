@@ -145,13 +145,14 @@ func main() {
 	// 系统提示三段式装配（契约层→人格层→记忆层）收敛到 persona.Compose，main 只提供素材不手拼
 	// （见 Zoo/model/persona.md §4）。角色句（"你是一个简洁的助手…"）已移入 personas/default.md：
 	// 选别的人格时不继承"简洁"约束。组合根拼字符串即可，agent 循环零改动。
-	base := "可用工具：echo（原样返回文本）、exec（执行白名单内只读命令，每次需用户确认）、plan（维护多步任务的分步执行清单）、file_read（读工作区文件，支持 offset/limit 窗口化）、file_list（列目录/找文件）、file_tree（目录树速览工作区结构）、doc_search（工作区关键词搜索）、file_write（写工作区文件，整体覆盖，每次需用户确认）、file_edit（按字符串替换编辑工作区文件，每次需用户确认）、propose_file_write（提议写文件，确认后才落地）、propose_file_edit（提议编辑文件，确认后才落地）、web_fetch（抓取网页转文本）、memory_search（检索长期记忆）、memory_get（读取记忆块）、memory_save（记住新事实）、kb_tree（知识库结构树/域视图查询）、kb_refs（知识库引用报告，删除知识点前必查）、kb_check（知识库巡检）、kb_write（把知识点写入知识库，自动生成 frontmatter 与认知深度）、doc_parse（用 lit 解析 PDF/Word 等文档到缓存，返回路径与摘要）、doc_read（读解析产物，窗口化）、doc_clean（清洗产物噪声：分页符/水印重复/页码行）。" +
+	base := "可用工具：echo（原样返回文本）、exec（执行白名单内只读命令，每次需用户确认）、plan（维护多步任务的分步执行清单）、file_read（读工作区文件，支持 offset/limit 窗口化）、file_list（列目录/找文件）、file_tree（目录树速览工作区结构）、doc_search（工作区关键词搜索）、file_write（写工作区文件，整体覆盖，每次需用户确认）、file_edit（按字符串替换编辑工作区文件，每次需用户确认）、propose_file_write（提议写文件，确认后才落地）、propose_file_edit（提议编辑文件，确认后才落地）、web_fetch（抓取网页转文本）、memory_search（检索长期记忆）、memory_get（读取记忆块）、memory_save（记住新事实）、kb_tree（知识库结构树/域视图查询）、kb_refs（知识库引用报告，删除知识点前必查）、kb_check（知识库巡检）、kb_write（把知识点写入知识库，自动生成 frontmatter 与认知深度）、doc_parse（用 lit 解析 PDF/Word 等文档到缓存，返回路径与摘要）、doc_read（读解析产物，窗口化）、doc_clean（清洗产物噪声：分页符/水印重复/页码行）、file_diff（比对两个文本文件内容差异：段落定位 + 段内字/词细标并回显原文；ignore 可组合 space/punct/symbol 忽略空白/标点/特殊字符，只看实质差异）。" +
 		"回答涉及先前决策、偏好、待办或项目事实时，先调用 memory_search 检索；" +
 		"用户提供链接并希望了解其内容时，用 web_fetch 读取；" +
 		"仅当用户明确要求记住某事时，才调用 memory_save 写入长期记忆；" +
 		"涉及知识库的结构/归属/引用关系时用 kb_tree/kb_refs，删除或整理知识点前先 kb_refs 查影响面、改完用 kb_check 巡检；" +
 		"用户要求把知识点记入知识库时，先向用户确认所属域（新域需批准）再调 kb_write；" +
 		"用户要求解析 PDF/Word 等文档时用 doc_parse，解析后先 doc_clean 清洗噪声再 doc_read 细读；整理文档前先询问用户在原文件直接整理还是新开文件；" +
+		"核对两个版本/处理前后文档（如原版 vs 整理产物）时用 file_diff 比对，只需实质内容差异时带 ignore 组合（space/punct/symbol）；" +
 		"访问工作区外路径（如 ~/Pdf）前，先向用户说明要访问的目录/文件并征得同意，确认后再访问；系统敏感目录（/etc /proc /usr 等）一律不访问。"
 	// 工作流分支清单（workflow.md §3.3）：注入"可用工作流分支"段，模型按触发条件
 	// 自动进入对应分支（如 PDF 解析任务 → pdf 分支），稳定处理而非临场发挥。
