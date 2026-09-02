@@ -84,7 +84,7 @@ func TestRegisterBuiltins_WithFile(t *testing.T) {
 	if err := RegisterBuiltins(reg, Deps{File: &FileConfig{Root: t.TempDir()}}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, name := range []string{"file_read", "file_list", "doc_search", "file_tree", "propose_file_write", "propose_file_edit", "file_edit", "file_write"} {
+	for _, name := range []string{"file_read", "file_list", "doc_search", "file_tree", "propose_file_write", "propose_file_edit", "file_edit", "file_write", "file_diff"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Errorf("%s should be registered with File config", name)
 		}
@@ -116,7 +116,8 @@ func TestRegisterBuiltins_PermissionTableComplete(t *testing.T) {
 	for _, name := range []string{"echo", "plan", "get_current_time", "web_fetch", "file_read",
 		"file_list", "file_tree", "doc_search", "propose_file_write", "propose_file_edit",
 		"memory_search", "memory_get", "memory_save", "exec", "file_write", "file_edit",
-		"kb_tree", "kb_refs", "kb_check", "kb_write", "doc_parse", "doc_read", "doc_clean"} {
+		"kb_tree", "kb_refs", "kb_check", "kb_write", "doc_parse", "doc_read", "doc_clean",
+		"file_diff"} {
 		if ToolPermissions[name] == "" {
 			t.Errorf("%s 未登记权限", name)
 		}
@@ -127,8 +128,8 @@ func TestRegisterBuiltins_PermissionTableComplete(t *testing.T) {
 			t.Errorf("%s 应为 Ask，got %s", name, ToolPermissions[name])
 		}
 	}
-	// Pass 语义：文档解析工具（只读 + 写受控缓存目录）不得误登记为 Ask。
-	for _, name := range []string{"doc_parse", "doc_read", "doc_clean"} {
+	// Pass 语义：文档解析工具（只读 + 写受控缓存目录）与只读比对工具不得误登记为 Ask。
+	for _, name := range []string{"doc_parse", "doc_read", "doc_clean", "file_diff"} {
 		if ToolPermissions[name] != policy.Pass {
 			t.Errorf("%s 应为 Pass，got %s", name, ToolPermissions[name])
 		}
