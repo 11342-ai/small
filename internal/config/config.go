@@ -37,6 +37,9 @@ const (
 	// 20 轮，覆盖 PDF 全链路（parse→clean→read→整理→write，大文件分批）；
 	// 显式 0 = 不限（agent 层用兜底上限防死循环）。
 	defaultMaxToolRounds = 20
+	// defaultGUIAddr 缺省 GUI 监听地址（gui.md §4.5：仅本机服务，配置来源单一 =
+	// config.yml 优先、内置默认兜底；删 --gui-addr flag 对齐删环境变量决策）。
+	defaultGUIAddr = "127.0.0.1:8090"
 )
 
 // Config 是客户端的集中配置，构造后整体向下游注入。
@@ -55,6 +58,8 @@ type Config struct {
 	CacheDir string
 	// MaxToolRounds 单次 Run 工具调用轮次上限（agent.WithMaxToolRounds）；<=0 表示不限。
 	MaxToolRounds int
+	// GUIAddr GUI 监听地址（gui.md §4.5；--gui 启动时用，仅本机服务）。
+	GUIAddr string
 	// MaxTokens 上下文预算（agent.WithTokenBudget）；<=0 表示不启用截断。
 	MaxTokens int
 }
@@ -67,6 +72,7 @@ type fileConfig struct {
 	MemoryDir  string `yaml:"memory_dir"`
 	KbDir      string `yaml:"kb_dir"`
 	CacheDir   string `yaml:"cache_dir"`
+	GUIAddr    string `yaml:"gui_addr"`
 	// 指针区分"未设置"与"显式 0"（显式 0 = 不限，未设置 = 用默认值；对齐 max_tokens）。
 	MaxTokens     *int `yaml:"max_tokens"`
 	MaxToolRounds *int `yaml:"max_tool_rounds"`
@@ -114,8 +120,9 @@ func Load() (*Config, error) {
 		// 显式 0 = 不限（agent 层用兜底上限防死循环）。
 		maxRounds = *file.MaxToolRounds
 	}
+	guiAddr := firstNonEmpty(file.GUIAddr, defaultGUIAddr)
 
-	return &Config{Model: model, APIKey: apiKey, SessionDir: sessionDir, MemoryDir: memoryDir, KbDir: kbDir, CacheDir: cacheDir, MaxTokens: maxTokens, MaxToolRounds: maxRounds}, nil
+	return &Config{Model: model, APIKey: apiKey, SessionDir: sessionDir, MemoryDir: memoryDir, KbDir: kbDir, CacheDir: cacheDir, MaxTokens: maxTokens, MaxToolRounds: maxRounds, GUIAddr: guiAddr}, nil
 }
 
 // loadFile 读取默认配置文件（路径写死 ~/.small/config.yml）；不存在时返回零值（等价于未配置）。

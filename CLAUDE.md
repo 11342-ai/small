@@ -31,7 +31,7 @@ gofmt -l .                          # 格式检查（无输出为干净）
 
 ### CLI 会话对话（多轮，自动持久化）
 
-语法：`go run . [--session <id>] [--persona <name>]`
+语法：`go run . [--session <id>] [--persona <name>] [--gui]`
 
 ```text
 --persona <name>
@@ -42,6 +42,9 @@ gofmt -l .                          # 格式检查（无输出为干净）
 |---|---|---|
 | `--session <id>` | 会话 ID：恢复/续聊该会话，不存在则新建 | 时间戳新会话（如 `20260823-153045`） |
 | `--persona <name>` | 对话人格：仅对新建会话生效；恢复会话时以会话 meta 为准 | `default` |
+| `--gui` | 启动 GUI 界面（浏览器 app-server，对话流式 + markdown 展示，见 Zoo/model/gui.md）；监听地址走 config.yml `gui_addr`（缺省 `127.0.0.1:8090`） | 关（CLI） |
+
+对话内命令（用户输入，`/` 开头）：`/help` `/session` `/tools` `/clear` `/persona` `/pdf <文档路径>`（显式进入 pdf 工作流分支，见 Zoo/model/workflow.md）。
 
 | 环境变量 | 含义 | 缺省 |
 |---|---|---|
@@ -56,7 +59,10 @@ gofmt -l .                          # 格式检查（无输出为干净）
 session_dir: ~/.small/sessions   # 会话存储目录
 memory_dir: ~/.small/memory      # 长期记忆目录（MEMORY.md + memory/*.md）
 kb_dir: ~/.small/kb              # 知识库目录（md 文件树，见 Zoo/model/kb.md）
+cache_dir: ~/.small/cache        # 文档解析缓存目录（doc_parse 产物，见 Zoo/model/tool-lit.md）
+gui_addr: 127.0.0.1:8090         # GUI 监听地址（--gui 时用，见 Zoo/model/gui.md）
 max_tokens: 32768                # 上下文预算（估算 token，显式 0 禁用截断）
+max_tool_rounds: 20              # 单次 Run 工具调用轮次上限（显式 0 不限）
 model: deepseek-v4-pro           # 可选；DEEPSEEK_MODEL 可覆盖
 ```
 

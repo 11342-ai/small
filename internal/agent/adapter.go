@@ -30,6 +30,10 @@ type providerChat struct {
 	model    string
 	thinking bool        // 是否显式开启思考模式（thinking: enabled）
 	tools    []tool.Spec // 启动期冻结的工具声明；为空时请求不带 tools 字段
+	// replyObs 流式回复增量回调（GUI SSE 用，Zoo/model/gui.md §4.1）：completeViaStream
+	// 的 OnContent 逐段调用；由 Agent 在 New 时经类型断言注入（同包未导出实现，接口不变）；
+	// nil 时不触发（纯 CLI 零回归）。只透 content，thinking 不透（Result.Thinking 整体返回）。
+	replyObs func(string)
 }
 
 // AdapterOption 以函数式选项配置适配器。
@@ -114,7 +118,13 @@ func (p *providerChat) completeViaStream(ctx context.Context, s provider.Streame
 	var accs []*acc
 	err := s.Stream(ctx, req, provider.StreamCallbacks{
 		OnThinking: func(seg string) error { thinking.WriteString(seg); return nil },
-		OnContent:  func(seg string) error { reply.WriteString(seg); return nil },
+		OnContent: func(seg string) error {
+			reply.WriteString(seg)
+			if p.replyObs != nil {
+				p.replyObs(seg)
+			}
+			return nil
+		},
 		OnUsage: func(u provider.Usage) error {
 			promptTokens = u.PromptTokens
 			return nil

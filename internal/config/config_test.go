@@ -60,6 +60,9 @@ func TestLoad_DefaultsWhenOnlyAPIKey(t *testing.T) {
 	if cfg.MaxToolRounds != defaultMaxToolRounds {
 		t.Errorf("max tool rounds = %d, want default %d", cfg.MaxToolRounds, defaultMaxToolRounds)
 	}
+	if cfg.GUIAddr != defaultGUIAddr {
+		t.Errorf("gui addr = %q, want default %q", cfg.GUIAddr, defaultGUIAddr)
+	}
 }
 
 func TestLoad_MaxTokensFromFileAndZeroDisables(t *testing.T) {
@@ -82,7 +85,7 @@ func TestLoad_MaxTokensFromFileAndZeroDisables(t *testing.T) {
 // 目录/预算只认 config.yml，环境变量不再参与。
 func TestLoad_Priority(t *testing.T) {
 	path := withIsolatedConfig(t)
-	if err := os.WriteFile(path, []byte("model: from-file\nsession_dir: /file/dir\nmemory_dir: /file/mem\nkb_dir: /file/kb\ncache_dir: /file/cache\nmax_tokens: 500\nmax_tool_rounds: 50\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("model: from-file\nsession_dir: /file/dir\nmemory_dir: /file/mem\nkb_dir: /file/kb\ncache_dir: /file/cache\nmax_tokens: 500\nmax_tool_rounds: 50\ngui_addr: 0.0.0.0:9999\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	t.Setenv(EnvAPIKey, "k")
@@ -105,6 +108,9 @@ func TestLoad_Priority(t *testing.T) {
 	if cfg.MaxToolRounds != 50 {
 		t.Errorf("max tool rounds = %d, want file 50", cfg.MaxToolRounds)
 	}
+	if cfg.GUIAddr != "0.0.0.0:9999" {
+		t.Errorf("gui addr = %q, want file 0.0.0.0:9999", cfg.GUIAddr)
+	}
 
 	// 阶段二：设置模型环境变量 → 仅模型被覆盖（环境变量 > 文件），目录/预算不变。
 	t.Setenv(EnvModel, "from-env")
@@ -123,6 +129,9 @@ func TestLoad_Priority(t *testing.T) {
 	}
 	if cfg.MaxToolRounds != 50 {
 		t.Errorf("max tool rounds = %d, want file 50", cfg.MaxToolRounds)
+	}
+	if cfg.GUIAddr != "0.0.0.0:9999" {
+		t.Errorf("gui addr = %q, want file 0.0.0.0:9999", cfg.GUIAddr)
 	}
 }
 

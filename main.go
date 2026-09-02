@@ -21,6 +21,7 @@ import (
 	"small/internal/agent"
 	"small/internal/command"
 	"small/internal/config"
+	"small/internal/gui"
 	"small/internal/kb"
 	"small/internal/memory"
 	"small/internal/persona"
@@ -37,6 +38,10 @@ func main() {
 	sessionID := flag.String("session", "", "会话 ID（缺省创建新会话）")
 	// 人格：仅对**新建会话**生效；恢复会话时以会话内记录的 meta 为准（一个对话一个人格）。
 	personaName := flag.String("persona", "", "对话人格（缺省 default；可用人格见 internal/persona/personas/）")
+	// GUI 界面（gui.md）：--gui 起浏览器 app-server（对话流式 + markdown 展示），
+	// CLI 主路径原样保留（GUI 与 CLI 是平行 I/O 层）；监听地址走 config.yml gui_addr
+	// （缺省 127.0.0.1:8090，配置来源单一对齐其他目录/预算项）。
+	guiFlag := flag.Bool("gui", false, "启动 GUI 界面（浏览器 app-server，对话 + markdown 展示）")
 	flag.Parse()
 	// 位置参数防护：多余参数几乎都是 flag 拼写错误（如 `-- persona` 中间多空格，`persona`
 	// 会变成位置参数被静默忽略、用户误以为生效）。直接报错暴露，提示正确写法，而不是静默降级。
@@ -159,52 +164,69 @@ func main() {
 	compose := func(pp persona.Persona) string { return persona.Compose(base, pp, memBlock) }
 	prompt := compose(p)
 	fmt.Printf("人格: %s\n", p.Name)
+
+	// GUI 分支（gui.md）：--gui 时起浏览器 app-server 后退出 main（不走 CLI 循环）。
+	// GUI 下 Ask 确认无 stdin 交互——工具 confirm 与命令 Confirm 一律拒绝（guard 回灌
+	// "未获确认"，模型会提示用户写操作请用 CLI）；doc_* 全 Pass 不受影响。
+	if *guiFlag {
+		// GUI 命令注册表（gui.md §4.4 v3）：复用 CLI cmdXxx 构造函数，语义与 CLI 一致。
+		// Ask 命令（/clear）无确认 → 拒绝；/pdf 注入消息经 CommandFunc 翻译走 agent。
+		guiCmd := command.New()
+		guiCmd.Confirm = func(string) bool { return false }
+		guiCmd.Register(cmdHelp(guiCmd))
+		guiCmd.Register(cmdSession(id))
+		guiCmd.Register(cmdTools(reg))
+		guiCmd.Register(cmdPdf())
+		guiSrv := gui.New(gui.Config{
+			Addr:      cfg.GUIAddr,
+			FileRoot:  fileRoot,
+			CacheRoot: cfg.CacheDir,
+			Command: func(ctx context.Context, input string) (bool, string, string, error) {
+				handled, output, err := guiCmd.Dispatch(ctx, input)
+				if !handled {
+					return false, "", "", nil
+				}
+				if errors.Is(err, errInject) {
+					return true, "", output, nil // /pdf：注入消息走 agent
+				}
+				if err != nil {
+					return true, "", "", err
+				}
+				return true, output, "", nil
+			},
+		})
+		// GUI 也落盘工具调用轨迹（与 CLI 同一 <sid>.trace.jsonl）：SSE 实时推送 +
+		// trace 写盘双通道（gui.md §4.2 补充）。
+		guiTr := trace.New(filepath.Join(cfg.SessionDir, id+".trace.jsonl"))
+		guiToolObs := func(ev agent.ToolCallEvent) {
+			guiSrv.OnTool(ev)
+			appendTrace(guiTr, ev, id)
+		}
+		guiAgent := buildAgent(client, reg, store, cfg, prompt, id, msgs,
+			guiToolObs, func(string) bool { return false }, guiSrv.OnReply)
+		guiSrv.Attach(guiAgent)
+		// 依赖 guiAgent 的命令（闭包运行时才解引用 guiCmd，先注册后填充等价）。
+		guiCmd.Register(cmdClear(guiAgent))
+		guiCmd.Register(cmdPersona(guiAgent, mgr, store, id, compose, &p, &metaNeeded))
+		fmt.Printf("GUI: http://%s （Ctrl+C 退出）\n", cfg.GUIAddr)
+		log.Fatalf("gui server: %v", guiSrv.ListenAndServe())
+	}
+
 	// 工具调用轨迹（观测元数据，独立于回灌历史）：跟随会话写 <sid>.trace.jsonl，
 	// 与 session 同目录、同生命周期。agent 不感知 trace——写盘动作包装成 observer 注入
 	// （见 Zoo/model/trace.md）。
 	tr := trace.New(filepath.Join(cfg.SessionDir, id+".trace.jsonl"))
-	a := agent.New(
-		agent.NewProviderChat(client, cfg.Model, reg.List(),
-			agent.WithThinking(true),
-		),
-		reg,
-		store,
-		agent.WithSystemPrompt(prompt),
-		agent.WithSession(id),
-		agent.WithHistory(agent.FromSession(msgs)),
-		agent.WithTokenBudget(cfg.MaxTokens),
-		// 工具轮次上限（pdf-workflow.md §5）：config.yml max_tool_rounds，缺省 20，
-		// 显式 0 = 不限（agent 用兜底上限防死循环）。
-		agent.WithMaxToolRounds(cfg.MaxToolRounds),
-		// 权限横切层（policy.md §3.2）：注入工具权限表 + Ask 确认回调。
-		// 确认交互复用命令层 confirmName（签名一致），exec/file_write/file_edit
-		// 执行前统一在此弹确认——不再各自内置确认逻辑。
-		agent.WithToolPermissions(builtin.ToolPermissions),
-		agent.WithToolConfirm(confirmName),
-		// 工具调用实时展示 + 轨迹落盘：逐条打印名称/入参/结果（截断摘要，防长结果刷屏）。
-		// trace 写失败属次要失败（观测数据），只记日志不打断对话。
-		agent.WithToolObserver(func(ev agent.ToolCallEvent) {
-			fmt.Printf("→ %s(%s)\n", ev.Name, truncate(ev.Args, 120))
-			mark := ""
-			if ev.Result.IsError {
-				mark = " [失败]"
-			}
-			fmt.Printf("  ↳ %s%s\n", truncate(ev.Result.Data, 200), mark)
-			// 事件类型：plan 变更单独标记（与工具调用区分，供 trace 对拍，见 model/plan.md §6）。
-			typ := "tool"
-			if ev.Name == "plan" {
-				typ = "plan"
-			}
-			if err := tr.Append(trace.Entry{
-				TS: time.Now(), Session: id, Round: ev.Round,
-				Name: ev.Name, Args: ev.Args, Data: ev.Result.Data,
-				IsError: ev.Result.IsError, DurationMs: ev.Duration.Milliseconds(),
-				Type: typ,
-			}); err != nil {
-				log.Printf("trace: %v", err)
-			}
-		}),
-	)
+	// 工具调用实时展示 + 轨迹落盘：逐条打印名称/入参/结果（截断摘要，防长结果刷屏）。
+	cliToolObs := func(ev agent.ToolCallEvent) {
+		fmt.Printf("→ %s(%s)\n", ev.Name, truncate(ev.Args, 120))
+		mark := ""
+		if ev.Result.IsError {
+			mark = " [失败]"
+		}
+		fmt.Printf("  ↳ %s%s\n", truncate(ev.Result.Data, 200), mark)
+		appendTrace(tr, ev, id)
+	}
+	a := buildAgent(client, reg, store, cfg, prompt, id, msgs, cliToolObs, confirmName, nil)
 
 	// 3. 命令系统：平行于 tool 骨架（用户触发 vs 模型触发），壳在 internal/command，
 	//    命令实现收敛在 main_commands.go 的具名构造函数，此处保持注册清单——
@@ -321,6 +343,51 @@ var errInject = errors.New("inject-agent-message")
 // execAllow exec 工具默认白名单（只读命令起步；find/cp 为 PDF 管理等动作所需，
 // exec 本身是 Ask 每步确认，cp 等写操作有确认门兜底，pdf-workflow.md §6）。
 var execAllow = []string{"ls", "cat", "grep", "head", "tail", "echo", "date", "pwd", "whoami", "find", "cp"}
+
+// buildAgent 装配 agent（CLI/GUI 共用，gui.md §4.2）：注入提示词/会话/预算/轮次/权限表。
+// toolObs（工具事件）与 confirm（Ask 确认）由调用方传——CLI 用打印+trace / stdin 确认，
+// GUI 用 SSE 推送 / 一律拒绝；replyObs 仅 GUI 传（流式回复增量，CLI 为 nil 零回归）。
+func buildAgent(client provider.Completer, reg *tool.Registry, store *session.Store, cfg *config.Config,
+	prompt, id string, msgs []session.Message,
+	toolObs agent.ToolObserver, confirm func(string) bool, replyObs func(string)) *agent.Agent {
+	return agent.New(
+		agent.NewProviderChat(client, cfg.Model, reg.List(),
+			agent.WithThinking(true),
+		),
+		reg,
+		store,
+		agent.WithSystemPrompt(prompt),
+		agent.WithSession(id),
+		agent.WithHistory(agent.FromSession(msgs)),
+		agent.WithTokenBudget(cfg.MaxTokens),
+		// 工具轮次上限（pdf-workflow.md §5）：config.yml max_tool_rounds，缺省 20，
+		// 显式 0 = 不限（agent 用兜底上限防死循环）。
+		agent.WithMaxToolRounds(cfg.MaxToolRounds),
+		// 权限横切层（policy.md §3.2）：注入工具权限表 + Ask 确认回调。
+		agent.WithToolPermissions(builtin.ToolPermissions),
+		agent.WithToolConfirm(confirm),
+		agent.WithToolObserver(toolObs),
+		agent.WithReplyObserver(replyObs),
+	)
+}
+
+// appendTrace 工具调用事件落盘（trace.md）：CLI 与 GUI 共用同一轨迹记录逻辑
+// （名称/入参/结果/耗时/轮次，plan 单独标记供对拍）。写失败属次要失败（观测数据），
+// 只记日志不打断对话。
+func appendTrace(tr *trace.Store, ev agent.ToolCallEvent, id string) {
+	typ := "tool"
+	if ev.Name == "plan" {
+		typ = "plan"
+	}
+	if err := tr.Append(trace.Entry{
+		TS: time.Now(), Session: id, Round: ev.Round,
+		Name: ev.Name, Args: ev.Args, Data: ev.Result.Data,
+		IsError: ev.Result.IsError, DurationMs: ev.Duration.Milliseconds(),
+		Type: typ,
+	}); err != nil {
+		log.Printf("trace: %v", err)
+	}
+}
 
 // detectRoot 工作区定位（tool-extend.md §5）：从 CWD 往上找 marker（go.mod 优先、.git 兜底），
 // 未命中回退 CWD。文件工具的搜索根（路径 policy 的边界，§7 待决已定案：go.mod → .git → CWD）。

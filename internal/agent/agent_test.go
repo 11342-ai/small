@@ -8,8 +8,62 @@ import (
 	"strings"
 	"testing"
 
+	"small/internal/provider"
 	"small/internal/tool"
 )
+
+// mockStreamer 流式 mock：Stream 逐段回调 OnContent，验证 replyObs 透出（gui.md §4.1）。
+type mockStreamer struct{ segs []string }
+
+func (m *mockStreamer) Complete(context.Context, *provider.ChatRequest) (*provider.ChatResponse, error) {
+	panic("not used in stream path")
+}
+
+func (m *mockStreamer) Stream(_ context.Context, _ *provider.ChatRequest, cbs provider.StreamCallbacks) error {
+	for _, s := range m.segs {
+		if cbs.OnContent != nil {
+			if err := cbs.OnContent(s); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// TestProviderChat_ReplyObserver 流式路径：OnContent 增量经 replyObs 透出。
+func TestProviderChat_ReplyObserver(t *testing.T) {
+	var got []string
+	pc := &providerChat{
+		client:   &mockStreamer{segs: []string{"你", "好", "！"}},
+		replyObs: func(s string) { got = append(got, s) },
+	}
+	res, err := pc.Complete(context.Background(), []Turn{{Role: "user", Content: "hi"}})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if joined := strings.Join(got, ""); joined != "你好！" {
+		t.Errorf("replyObs 增量 = %q, want 你好！", joined)
+	}
+	if res.Reply != "你好！" {
+		t.Errorf("reply = %q, want 你好！", res.Reply)
+	}
+}
+
+// TestAgent_WithReplyObserver Option 设置字段；非流式 Completer（mock）不触发回调。
+func TestAgent_WithReplyObserver(t *testing.T) {
+	script := &scriptCompleter{results: []Result{{Reply: "ok"}}}
+	called := false
+	a := New(script, nil, nil, WithReplyObserver(func(string) { called = true }))
+	if a.replyObs == nil {
+		t.Error("WithReplyObserver 应设置 a.replyObs")
+	}
+	if _, err := a.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if called {
+		t.Error("非流式 Completer 不应触发 replyObs（无增量）")
+	}
+}
 
 // scriptCompleter 按脚本返回结果并记录每次收到的历史，用于确定性驱动循环。
 type scriptCompleter struct {

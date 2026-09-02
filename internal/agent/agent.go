@@ -107,6 +107,7 @@ type Agent struct {
 	baseline    int                          // 最近一次 Complete 的真实 prompt_tokens（usage）；0 表示无基线
 	baselineLen int                          // 基线对应的历史长度（Complete 返回瞬间 len(history)）
 	observe     ToolObserver                 // 工具调用观察者；nil 时不触发（nil-safe 回调约定）
+	replyObs    func(string)                 // 流式回复增量回调；nil 时不触发（GUI SSE 用，gui.md §4.1）
 	perms       map[string]policy.Permission // 工具权限表（按工具名）；nil = 全 Pass（旧行为）
 	confirm     func(name string) bool       // Ask 工具确认回调；nil-safe，Ask 且 nil → 拒绝
 	maxRounds   int                          // 单次 Run 工具调用轮次上限；<=0 视为不限（用兜底上限）
@@ -148,6 +149,14 @@ func WithToolObserver(obs ToolObserver) Option {
 	return func(a *Agent) { a.observe = obs }
 }
 
+// WithReplyObserver 注入流式回复增量回调（gui.md §4.1）：模型生成内容时逐段回调
+// （不保证整字整词，仅保证按增量顺序），供 GUI 打字机渲染。nil 时不触发（默认）。
+// 只透 content；thinking 不透（Result.Thinking 仍整体返回）。非流式后端无增量，
+// 调用方需以完整回复兜底（GUI 以 done 事件兜底）。
+func WithReplyObserver(obs func(string)) Option {
+	return func(a *Agent) { a.replyObs = obs }
+}
+
 // WithToolPermissions 注入工具权限表（按工具名 → policy.Permission，权限横切层，
 // 见 Zoo/model/policy.md）。nil 或空表 = 全 Pass（与不注入行为一致）；
 // Ask 工具执行前需经确认回调放行，无回调直接拒绝（fail-closed）。
@@ -180,6 +189,13 @@ func New(chat Completer, tools *tool.Registry, store *session.Store, opts ...Opt
 	a := &Agent{chat: chat, tools: tools, store: store, maxRounds: defaultMaxToolRounds}
 	for _, o := range opts {
 		o(a)
+	}
+	// 回复流式回调注入 adapter（gui.md §4.1）：adapter 与 Agent 同包，类型断言可行；
+	// chat 非 *providerChat（如测试 mock）则忽略，回调只对真实适配器生效。
+	if a.replyObs != nil {
+		if pc, ok := a.chat.(*providerChat); ok {
+			pc.replyObs = a.replyObs
+		}
 	}
 	return a
 }

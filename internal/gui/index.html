@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>small GUI</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; }
+  header { padding: 8px 16px; border-bottom: 1px solid #8882; font-size: 14px; }
+  #chat { flex: 1; overflow-y: auto; padding: 16px; }
+  .msg { margin-bottom: 12px; }
+  .msg .who { font-size: 12px; opacity: .6; }
+  .msg .body { white-space: pre-wrap; word-break: break-word; }
+  .msg.user .body { background: #8882; border-radius: 8px; padding: 8px 12px; }
+  .tool { font-size: 12px; color: #888; margin: 2px 0; font-family: monospace; }
+  .error { color: #d33; }
+  #view { border-top: 1px solid #8882; height: 40%; overflow-y: auto; padding: 8px 16px; font-size: 14px; }
+  #view h1, #view h2 { border-bottom: 1px solid #8882; padding-bottom: 4px; }
+  #view .placeholder { color: #888; font-size: 13px; margin-top: 8px; }
+  #inputbar { display: flex; border-top: 1px solid #8882; }
+  #input { flex: 1; border: 0; padding: 12px; font-size: 14px; outline: none; }
+  #send { border: 0; padding: 0 20px; font-size: 14px; cursor: pointer; }
+  #send:disabled { opacity: .5; cursor: not-allowed; }
+</style>
+</head>
+<body>
+<header>small · 对话与文档展示（/view &lt;路径&gt; 切换下方展示区）</header>
+<div id="chat"></div>
+<div id="view"><div class="placeholder">下方为展示区：在输入框输入 /view &lt;路径&gt; 显示 markdown 文档或视频（如 /view ~/Pdf/报告.md）。</div></div>
+<div id="inputbar">
+  <input id="input" placeholder="输入消息或 /view 路径，Enter 发送" autocomplete="off" autofocus>
+  <button id="send">发送</button>
+</div>
+<script>
+"use strict";
+const chatEl = document.getElementById("chat");
+const viewEl = document.getElementById("view");
+const inputEl = document.getElementById("input");
+const sendBtn = document.getElementById("send");
+
+function addMsg(who, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + who;
+  const w = document.createElement("div");
+  w.className = "who";
+  w.textContent = who === "user" ? "你" : "assistant";
+  const b = document.createElement("div");
+  b.className = "body";
+  b.textContent = text;
+  div.append(w, b);
+  chatEl.appendChild(div);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  return b;
+}
+function addTool(text) {
+  const div = document.createElement("div");
+  div.className = "tool";
+  div.textContent = "→ " + text;
+  chatEl.appendChild(div);
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+function addError(text) {
+  const div = document.createElement("div");
+  div.className = "msg error";
+  div.textContent = text;
+  chatEl.appendChild(div);
+}
+
+function renderView(path) {
+  fetch("/view?path=" + encodeURIComponent(path))
+    .then(r => {
+      if (!r.ok) return r.text().then(t => { throw new Error(t); });
+      return r.text();
+    })
+    .then(html => { viewEl.innerHTML = html; })
+    .catch(e => { viewEl.textContent = "展示失败: " + e.message; });
+}
+
+// /chat 流式读取：按 \n\n 分事件块，解析 event:/data:
+async function send() {
+  const msg = inputEl.value.trim();
+  if (!msg) return;
+  inputEl.value = "";
+  addMsg("user", msg);
+  // 命令切换展示：/view <path> 走展示区，其余走对话流。
+  if (msg.startsWith("/view ")) {
+    renderView(msg.slice(6).trim());
+    return;
+  }
+  sendBtn.disabled = true;
+  const bodyEl = addMsg("assistant", "");
+  try {
+    const resp = await fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: msg })
+    });
+    if (!resp.ok) throw new Error((await resp.text()) || resp.statusText);
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        handleEvent(block, bodyEl);
+      }
+    }
+  } catch (e) {
+    addError("请求失败: " + e.message);
+  } finally {
+    sendBtn.disabled = false;
+    inputEl.focus();
+  }
+}
+
+function handleEvent(block, bodyEl) {
+  let ev = "", dataLines = [];
+  for (const line of block.split("\n")) {
+    if (line.startsWith("event: ")) ev = line.slice(7);
+    else if (line.startsWith("data: ")) dataLines.push(line.slice(6));
+  }
+  // SSE 规范：块内多行 data 合并时以换行拼接——修复增量含 \n 时内容堆一起（gui.md §4.6）。
+  const data = dataLines.join("\n");
+  if (!ev || !data) return;
+  if (ev === "reply") bodyEl.textContent += data;
+  else if (ev === "tool") addTool(data);
+  else if (ev === "done") { if (bodyEl.textContent.length === 0) bodyEl.textContent = data; }
+  else if (ev === "error") addError(data);
+}
+
+// 加载时恢复历史（gui.md §4.6）：仅 user/assistant 对话消息。
+fetch("/history").then(r => r.json()).then(list => {
+  for (const m of list) {
+    addMsg(m.role === "user" ? "user" : "assistant", m.content);
+  }
+  inputEl.focus();
+}).catch(() => {});
+
+sendBtn.addEventListener("click", send);
+inputEl.addEventListener("keydown", e => { if (e.key === "Enter") send(); });
+</script>
+</body>
+</html>
