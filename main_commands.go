@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"small/internal/agent"
 	"small/internal/command"
+	"small/internal/k8s"
 	"small/internal/persona"
 	"small/internal/policy"
 	"small/internal/session"
@@ -72,6 +74,40 @@ func cmdPdf() command.CommandSpec {
 			}
 			path := strings.Join(args, " ") // 路径可能含空格，按原始参数重新拼接
 			msg := "请按 pdf 工作流处理文档：" + path + "（用户已通过 /pdf 命令显式进入 pdf 分支）"
+			return msg, errInject
+		},
+	}
+}
+
+// cmdDiag 显式进入 k8s 诊断分支：/diag <namespace>/<pod>。
+// 与 /pdf 同款注入机制（errInject）：命令只做参数校验与"目标可达性预检"，诊断本身由 agent
+// 按 k8s-diag 分支执行（见 Zoo/model/k8s-diagnosis.md §6）。
+// coll 为 nil 表示集群未接入（采集器构造失败时组合根传 nil）：直接拒绝，别让模型去猜。
+func cmdDiag(coll *k8s.Collector) command.CommandSpec {
+	return command.CommandSpec{
+		Name: "/diag", Usage: "诊断 Pod 异常：/diag <namespace>/<pod>",
+		Run: func(ctx context.Context, args []string) (string, error) {
+			if coll == nil {
+				return "", errors.New("K8s 未接入：检查 kubeconfig（config.yml 的 kube_config，缺省 ~/.kube/config）后重启")
+			}
+			if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+				return "", errors.New("用法：/diag <namespace>/<pod>（如 /diag default/web-0）")
+			}
+			target := strings.TrimSpace(args[0])
+			ns, pod, ok := strings.Cut(target, "/")
+			if !ok || ns == "" || pod == "" {
+				return "", fmt.Errorf("参数格式应为 <namespace>/<pod>，收到 %q", target)
+			}
+			// 预检：目标读不到就别烧一轮模型调用（拼错名字 / RBAC 不足都会走到这里）。
+			// 用短超时，避免命令侧卡住交互。
+			probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			if _, err := coll.Pod(probeCtx, ns, pod); err != nil {
+				return "", fmt.Errorf("读不到目标 Pod %s/%s：%v", ns, pod, err)
+			}
+			msg := "请按 k8s-diag 工作流诊断 Pod " + ns + "/" + pod +
+				"（用户已通过 /diag 命令显式进入 k8s-diag 分支：先用 k8s_evidence 一次拿全证据，" +
+				"再按收集→分析→验证推进，最后用 k8s_report 提交报告）"
 			return msg, errInject
 		},
 	}

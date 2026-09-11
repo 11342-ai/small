@@ -1,0 +1,36 @@
+# 场景：nodeSelector 与节点标签不匹配（Pending 的调度约束分支）
+#
+# 节点上不存在 lab-node-role 这个标签，硬门槛（nodeSelector 等价于 required）直接把它挡在调度外：
+# 事件是 "node(s) didn't match Pod's node affinity/selector"，与资源不足的 Insufficient 完全不同。
+# 选 nodeSelector 而不是 affinity：取值形态最干净，且采集侧的 node 标签就足以判定——
+# 模型要能把"Pod 要的键值"与"节点实际标签"对起来，而不是笼统归到"调度失败"。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pending-selector
+  namespace: diag-lab
+  labels:
+    lab: pending-node-selector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pending-selector
+  template:
+    metadata:
+      labels:
+        app: pending-selector
+        lab: pending-node-selector
+    spec:
+      nodeSelector:
+        lab-node-role: does-not-exist
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 64Mi

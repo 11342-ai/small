@@ -3,6 +3,7 @@ package builtin
 import (
 	"testing"
 
+	"small/internal/k8s"
 	"small/internal/kb"
 	"small/internal/memory"
 	"small/internal/policy"
@@ -117,7 +118,8 @@ func TestRegisterBuiltins_PermissionTableComplete(t *testing.T) {
 		"file_list", "file_tree", "doc_search", "propose_file_write", "propose_file_edit",
 		"memory_search", "memory_get", "memory_save", "exec", "file_write", "file_edit",
 		"kb_tree", "kb_refs", "kb_check", "kb_write", "doc_parse", "doc_read", "doc_clean",
-		"file_diff"} {
+		"file_diff", "k8s_pod", "k8s_workload", "k8s_events", "k8s_logs", "k8s_metrics",
+		"k8s_node", "k8s_evidence", "k8s_report"} {
 		if ToolPermissions[name] == "" {
 			t.Errorf("%s 未登记权限", name)
 		}
@@ -132,6 +134,34 @@ func TestRegisterBuiltins_PermissionTableComplete(t *testing.T) {
 	for _, name := range []string{"doc_parse", "doc_read", "doc_clean", "file_diff"} {
 		if ToolPermissions[name] != policy.Pass {
 			t.Errorf("%s 应为 Pass，got %s", name, ToolPermissions[name])
+		}
+	}
+}
+
+// TestRegisterBuiltins_WithK8s 覆盖 K8s 注册分支：deps.K8s 非空才注册九个 k8s_* 工具。
+// 用零值 Collector 即可——构造函数在装配期只声明 Spec 与闭包，不碰客户端。
+func TestRegisterBuiltins_WithK8s(t *testing.T) {
+	reg := tool.New()
+	if err := RegisterBuiltins(reg, Deps{K8s: &k8s.Collector{}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, name := range []string{"k8s_pod", "k8s_workload", "k8s_events", "k8s_logs",
+		"k8s_metrics", "k8s_node", "k8s_nodes", "k8s_evidence", "k8s_report"} {
+		if _, ok := reg.Get(name); !ok {
+			t.Errorf("%s 应在 K8s 采集器就绪时注册", name)
+		}
+		if ToolPermissions[name] != policy.Pass {
+			t.Errorf("%s 应为 Pass（只读 + 写自有受控目录），got %s", name, ToolPermissions[name])
+		}
+	}
+	// 退化检查：没有 Collector 时这九个名字都不该出现。
+	reg2 := tool.New()
+	if err := RegisterBuiltins(reg2, Deps{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, name := range []string{"k8s_pod", "k8s_evidence", "k8s_report"} {
+		if _, ok := reg2.Get(name); ok {
+			t.Errorf("%s 不应在没有 K8s 采集器时注册", name)
 		}
 	}
 }

@@ -1,0 +1,42 @@
+# 场景：JVM 堆配置超过容器 limit（OOMKilled 的配置错配分支）
+#
+# 与 oom-limit-too-small 的分界全在"堆是怎么配的"：那边没有任何堆配置，用量贴着 limit 涨上去被杀；
+# 这边命令行明写 -Xmx256m + 元空间 64m，而 limit 只有 128Mi——启动瞬间就被内核杀掉（137）。
+# -XX:+AlwaysPreTouch 是必需的：不加它 JVM 只是"允许"用 256m，-version 这种不出内存的命令
+# 根本不会去碰堆，被杀的时序就复现不出来（本场景要的是"堆一开就超"，而不是"跑着跑着超"）。
+# 镜像 eclipse-temurin:17 由主机 docker load 进节点（见 README），tag 不是 latest，
+# 默认 imagePullPolicy=IfNotPresent 会直接用节点本地镜像，不碰外网。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oom-heap
+  namespace: diag-lab
+  labels:
+    lab: oom-heap-misconfig
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oom-heap
+  template:
+    metadata:
+      labels:
+        app: oom-heap
+        lab: oom-heap-misconfig
+    spec:
+      containers:
+        - name: jvm
+          image: eclipse-temurin:17
+          command:
+            - java
+            - -Xmx256m
+            - -Xms256m
+            - -XX:MaxMetaspaceSize=64m
+            - -XX:+AlwaysPreTouch
+            - -version
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              memory: 128Mi

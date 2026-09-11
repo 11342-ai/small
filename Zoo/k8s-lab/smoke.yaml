@@ -1,0 +1,63 @@
+# 第 1 批（采集包 internal/k8s）冒烟场景：两个"拉不到镜像"的故障目标。
+#   - 裸 Pod（badimg）：无 controller owner，用来验证 owner 链为空时的降级说明；
+#   - Deployment（badweb）：验证 Pod → ReplicaSet → Deployment 的上溯与模板规格。
+# 健康目标不在此文件里：直接复用集群自带 kube-system 的 Running Pod（见 internal/k8s/lab_test.go）。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: diag-lab
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: badimg
+  namespace: diag-lab
+  labels:
+    app: badimg
+spec:
+  containers:
+    - name: app
+      image: busybox:1.36-does-not-exist
+      command: ["sh", "-c", "sleep 3600"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: badweb
+  namespace: diag-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: badweb
+  template:
+    metadata:
+      labels:
+        app: badweb
+    spec:
+      containers:
+        - name: busybox
+          image: busybox:1.36-nope
+          command: ["sh", "-c", "sleep 3600"]
+---
+# 一次性 Job（会成功退出）：制造一个"终态 Pod"，用来演示与回归两类计数口径——
+# kubectl get pods 会把它列出来，而 pods_on_node / requests 汇总按"非终态"算（终态不再占资源）。
+# smoke.sh up 会先删旧 Job 再 apply，保证每次都有一个新鲜的 Succeeded Pod（apply 同一 spec 不会重跑已完成的 Job）。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: once-done
+  namespace: diag-lab
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: once
+          image: busybox:1.36
+          command: ["sh", "-c", "echo done"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 32Mi

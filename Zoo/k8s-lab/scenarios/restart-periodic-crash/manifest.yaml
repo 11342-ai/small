@@ -1,0 +1,40 @@
+# 场景：应用运行一段时间后周期崩溃（第二批量·重启分支）
+#
+# 容器起来正常（打印一行 started），跑 25 秒后自己退出（非 0 退出码）→ restartPolicy Always 把它
+# 拉起来，如此循环。与 restart-liveness-kill 是一对：都是"能跑但反复重启"，但这条没有任何探针
+# （spec 里 probes 为空、事件里没有 probe 失败），是应用自身的崩溃。
+# 与 crashloop-app-error 的区别在时间维度：那条是启动即退，这条是先正常服务 25 秒再崩。
+#
+# 为什么不用信号（kill -SEGV 之类）自杀：容器里的 PID 1 对"没装处理函数"的信号是忽略的，
+# 实测 `kill -11 $$` / `kill -s 11 $$` / `kill -6 1` 在本环境（busybox ash + containerd）全都不生效
+# ——前两个连语法都不认（sh: invalid number '$'），第三个发了但 PID 1 照常活着。
+# 用 SIGKILL 能杀掉但退出码 137 会与 OOMKilled 撞车，反而污染判别。故用普通非 0 退出码。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: restart-crash
+  namespace: diag-lab
+  labels:
+    lab: restart-periodic-crash
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: restart-crash
+  template:
+    metadata:
+      labels:
+        app: restart-crash
+        lab: restart-periodic-crash
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args: ["echo 'app started; serving on :8080'; sleep 25; exit 1"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 16Mi
+            limits:
+              memory: 32Mi

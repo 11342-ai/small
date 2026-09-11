@@ -1,0 +1,19 @@
+{
+  "name": "crashloop-missing-dependency",
+  "symptom": "CrashLoopBackOff",
+  "target": { "namespace": "diag-lab", "selector": "app=crashloop-dep" },
+  "wait": {
+    "container_last_state_reason": "Error",
+    "container_restart_count_min": 1,
+    "timeout_seconds": 180
+  },
+  "evidence_test": "TestScenarioCrashLoopMissingDependency",
+  "report": {
+    "symptoms_must_include": ["CrashLoopBackOff"],
+    "root_cause_category": "crashloop_missing_dependency",
+    "confidence": { "min": 0.8 },
+    "evidence_keywords": ["db-svc", "bad address", "no such host"],
+    "evidence_min_hits": 2,
+    "must_not_claim": ["配置错误"]
+  }
+}

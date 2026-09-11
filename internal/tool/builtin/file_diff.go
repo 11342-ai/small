@@ -612,7 +612,8 @@ func diffAssemble(head string, fmtEq, reorderN int, fmtSamples, reorderSamples [
 				out.WriteString("改动面大，建议 file_read 窗口细读\n")
 			} else {
 				for _, ln := range cls {
-					out.WriteString(ln + "\n")
+					out.WriteString(ln)
+					out.WriteByte('\n')
 				}
 				if total > emitted {
 					out.WriteString(fmt.Sprintf("…该段内另有 %d 处散点差异\n", total-emitted))
@@ -621,11 +622,11 @@ func diffAssemble(head string, fmtEq, reorderN int, fmtSamples, reorderSamples [
 			shown++
 		case 'd':
 			out.WriteString(fmt.Sprintf("[删] A:第 %d-%d 行（A 第 %d 段）\n", e.a.start, e.a.end, e.a.ord))
-			out.WriteString("A: " + truncateRunes(e.a.text, diffContentCap) + "\n")
+			fmt.Fprintf(&out, "A: %s\n", truncateRunes(e.a.text, diffContentCap))
 			shown++
 		default:
 			out.WriteString(fmt.Sprintf("[增] B:第 %d-%d 行（B 第 %d 段）\n", e.b.start, e.b.end, e.b.ord))
-			out.WriteString("B: " + truncateRunes(e.b.text, diffContentCap) + "\n")
+			fmt.Fprintf(&out, "B: %s\n", truncateRunes(e.b.text, diffContentCap))
 			shown++
 		}
 	}

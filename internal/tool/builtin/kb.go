@@ -154,7 +154,7 @@ func KbCheck(store *kb.Store) tool.Tool {
 }
 
 // runKbCheck 巡检的执行逻辑：拉取 Check 结果并格式化。
-func runKbCheck(store *kb.Store, args json.RawMessage) (tool.Result, error) {
+func runKbCheck(store *kb.Store, _ json.RawMessage) (tool.Result, error) {
 	issues := store.Check()
 	if len(issues) == 0 {
 		return tool.Result{Data: "巡检通过：无结构环、无断链、无重复标题、level 一致。"}, nil

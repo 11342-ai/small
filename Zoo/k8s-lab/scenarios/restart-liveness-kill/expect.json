@@ -1,0 +1,18 @@
+{
+  "name": "restart-liveness-kill",
+  "symptom": "ContainerRestart",
+  "target": { "namespace": "diag-lab", "selector": "app=restart-liveness" },
+  "wait": {
+    "container_restart_count_min": 2,
+    "timeout_seconds": 180
+  },
+  "evidence_test": "TestScenarioRestartLivenessKill",
+  "report": {
+    "symptoms_must_include": ["ContainerRestart"],
+    "root_cause_category": "probe_port_wrong",
+    "confidence": { "min": 0.8 },
+    "evidence_keywords": ["Liveness probe failed", "will be restarted", "8081"],
+    "evidence_min_hits": 2,
+    "must_not_claim": ["内存超限被杀"]
+  }
+}

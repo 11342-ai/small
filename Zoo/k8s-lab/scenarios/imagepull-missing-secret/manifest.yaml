@@ -1,0 +1,36 @@
+# 场景：私有仓库缺凭据（ImagePullBackOff 的鉴权分支）
+#
+# 镜像指向 ghcr.io 上一个对匿名不可见的路径：registry 能连通，但匿名取 token 被拒
+# （failed to authorize ... 403 Forbidden）。这就是"私有仓库没给凭据"的等价形态，
+# 与 imagepull_tag_missing（404/manifest unknown）、imagepull_name_invalid（repository does not exist）
+# 在报错文案上分得开——那两类都是"鉴权通过了但对象不在"。
+#
+# Pod 不写 imagePullSecrets、也不指定 serviceAccountName（用 default SA，上面同样没有 secret）：
+# 分类器要能看到"两处都没有可用凭据"这一面，才会判 missing_secret 而不是笼统的网络问题。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: need-secret
+  namespace: diag-lab
+  labels:
+    lab: imagepull-missing-secret
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: needsecret
+  template:
+    metadata:
+      labels:
+        app: needsecret
+        lab: imagepull-missing-secret
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/diag-lab-private/app:1
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 64Mi

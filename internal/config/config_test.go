@@ -65,6 +65,36 @@ func TestLoad_DefaultsWhenOnlyAPIKey(t *testing.T) {
 	}
 }
 
+// TestLoad_KubeContextFromFile 验证 kube_context 从 config.yml 读取（多集群切换）；
+// 未配置时留空——空串的语义是"用 kubeconfig 的 current-context"，不能填默认值。
+func TestLoad_KubeContextFromFile(t *testing.T) {
+	t.Setenv(EnvAPIKey, "k")
+	path := withIsolatedConfig(t)
+	if err := os.WriteFile(path, []byte("kube_config: /tmp/kubeconfig\nkube_context: prod\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.KubeContext != "prod" {
+		t.Errorf("kube context = %q, want prod", cfg.KubeContext)
+	}
+	if cfg.KubeConfig != "/tmp/kubeconfig" {
+		t.Errorf("kube config = %q, want /tmp/kubeconfig（绝对路径不该被改写）", cfg.KubeConfig)
+	}
+
+	// 换一个干净 HOME（无配置文件）：context 留空而不是落某个默认值。
+	withIsolatedConfig(t)
+	cfg2, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg2.KubeContext != "" {
+		t.Errorf("未配置 kube_context 时应留空（= current-context），实际 %q", cfg2.KubeContext)
+	}
+}
+
 func TestLoad_MaxTokensFromFileAndZeroDisables(t *testing.T) {
 	path := withIsolatedConfig(t)
 	if err := os.WriteFile(path, []byte("max_tokens: 0\n"), 0o644); err != nil {

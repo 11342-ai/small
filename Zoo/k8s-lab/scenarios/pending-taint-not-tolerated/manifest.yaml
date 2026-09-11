@@ -1,0 +1,35 @@
+# 场景：节点 taint 未被 Pod 容忍（Pending 的调度约束分支）
+#
+# taint 不在这个文件里——它挂在节点对象上，由同目录的 setup.sh 打、teardown.sh 摘。
+# 这里的关键是"不写 tolerations"：Pod 带了容忍就调度得上去，场景就废了。
+# 事件是 "0/1 nodes are available: 1 node(s) had untolerated taint(s)."（本版调度器不列出
+# taint 键，所以"是哪把 taint"要从节点侧证据看），与资源不足（Insufficient）、标签不匹配
+# （didn't match）在文案上完全分得开——三个 Pending 分支的判据就是这三条不同的调度失败理由。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pending-taint
+  namespace: diag-lab
+  labels:
+    lab: pending-taint-not-tolerated
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pending-taint
+  template:
+    metadata:
+      labels:
+        app: pending-taint
+        lab: pending-taint-not-tolerated
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 64Mi

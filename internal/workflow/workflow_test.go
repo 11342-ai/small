@@ -27,6 +27,26 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+// TestLoad_K8sDiag k8s-diag 分支：元数据齐全，步骤含"收集→分析→验证→提交"的关键动作。
+func TestLoad_K8sDiag(t *testing.T) {
+	m, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	w, err := m.Get("k8s-diag")
+	if err != nil {
+		t.Fatalf("Get(k8s-diag): %v", err)
+	}
+	if w.Description == "" || w.Trigger == "" || w.Input == "" || w.Output == "" || w.Stop == "" {
+		t.Errorf("k8s-diag 分支元数据不全: %+v", w)
+	}
+	for _, kw := range []string{"k8s_pod", "k8s_evidence", "k8s_report", "previous", "missing_evidence", "分支完成:k8s-diag"} {
+		if !strings.Contains(w.Steps, kw) {
+			t.Errorf("k8s-diag 步骤缺 %q:\n%s", kw, w.Steps)
+		}
+	}
+}
+
 // TestManager_GetList 未命中报错附可用列表；List 稳定有序。
 func TestManager_GetList(t *testing.T) {
 	m, err := Load()
@@ -54,7 +74,7 @@ func TestRenderBranch(t *testing.T) {
 	if s == "" {
 		t.Fatal("有分支时 RenderBranch 不应为空")
 	}
-	for _, kw := range []string{"可用工作流分支", "[pdf]", "触发：", "输入：", "输出：", "停止：", "步骤：", "[进入分支:分支名]", "[分支完成:分支名]"} {
+	for _, kw := range []string{"可用工作流分支", "[pdf]", "[k8s-diag]", "触发：", "输入：", "输出：", "停止：", "步骤：", "[进入分支:分支名]", "[分支完成:分支名]"} {
 		if !strings.Contains(s, kw) {
 			t.Errorf("RenderBranch 缺 %q:\n%s", kw, s)
 		}

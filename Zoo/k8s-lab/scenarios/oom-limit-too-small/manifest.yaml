@@ -1,0 +1,37 @@
+# 场景：容器内存超限被杀（limit 太小）
+#
+# 容器把 100MB 一次性读进 shell 变量（匿名内存），而 limit 只有 64Mi → 被 cgroup OOM 杀。
+# 为什么不用写文件填 page cache：干净页可被内核回收，可能只是变慢而不触发 OOM；
+# 匿名内存没有回收余地，行为确定（这也是"limit 太小"与"内存泄漏"的形态差别：
+# 这里是一条平线撞上限，不是缓慢爬升）。
+# 若某些内核/运行时下仍不 OOM，换一个自带 stress 的镜像即可，只动本文件。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oom-app
+  namespace: diag-lab
+  labels:
+    lab: oom-limit-too-small
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oom-app
+  template:
+    metadata:
+      labels:
+        app: oom-app
+        lab: oom-limit-too-small
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args: ["BIG=$(head -c 100000000 /dev/zero | tr '\\0' 'x'); echo 'got 100MB'; sleep 3600"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi

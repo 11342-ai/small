@@ -1,0 +1,19 @@
+{
+  "name": "pending-taint-not-tolerated",
+  "symptom": "Pending",
+  "target": { "namespace": "diag-lab", "selector": "app=pending-taint" },
+  "wait": {
+    "phase": "Pending",
+    "event_reason": "FailedScheduling",
+    "timeout_seconds": 90
+  },
+  "evidence_test": "TestScenarioPendingTaintNotTolerated",
+  "report": {
+    "symptoms_must_include": ["Pending"],
+    "root_cause_category": "pending_taint_not_tolerated",
+    "confidence": { "min": 0.8 },
+    "evidence_keywords": ["untolerated taint", "diag-lab-scenario", "FailedScheduling"],
+    "evidence_min_hits": 2,
+    "must_not_claim": ["节点余量不足", "nodeSelector 不匹配"]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "crashloop-config-missing-env",
+  "symptom": "CrashLoopBackOff",
+  "target": { "namespace": "diag-lab", "selector": "app=crashloop-cfg" },
+  "wait": {
+    "container_last_state_reason": "Error",
+    "container_restart_count_min": 1,
+    "timeout_seconds": 180
+  },
+  "evidence_test": "TestScenarioCrashLoopConfigMissingEnv",
+  "report": {
+    "symptoms_must_include": ["CrashLoopBackOff"],
+    "root_cause_category": "crashloop_config_error",
+    "confidence": { "min": 0.8 },
+    "evidence_keywords": ["missing required env", "MODE", "env"],
+    "evidence_min_hits": 2,
+    "must_not_claim": ["依赖不可达"]
+  }
+}

@@ -1,0 +1,55 @@
+# 场景：PVC 未绑定导致 Pod 一直 Pending（存储分支）
+#
+# claim 指向一个根本不存在的 storageClass：没有供给者认领，claim 永远停在 Pending，
+# 调度器给出 "pod has unbound immediate PersistentVolumeClaims"，Pod 连节点都选不上。
+# 为什么不用"有 storageClass 但容量不足"：那要看外部供给者的报错时机与文本，不稳定；
+# "类不存在"是最确定的形态，且 PVC 自身的事件就是判据（jjj §21.2 的选取理由）。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lab-pending-claim
+  namespace: diag-lab
+  labels:
+    lab: pending-pvc-unbound
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: lab-no-such-sc
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pending-pvc
+  namespace: diag-lab
+  labels:
+    lab: pending-pvc-unbound
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pending-pvc
+  template:
+    metadata:
+      labels:
+        app: pending-pvc
+        lab: pending-pvc-unbound
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: lab-pending-claim

@@ -1,0 +1,45 @@
+# 场景：被 liveness 探针杀掉（ContainerRestart 的探针分支）
+#
+# 应用本身是好的：httpd 正常监听 8080 并在前台运行。但 liveness 探的是 8081（写错的端口），
+# 永远连接被拒 → kubelet 判失败并杀掉容器重启，restartCount 持续上涨，lastState 是 Error(137)。
+# 这条与 OOMKilled 的形态差别正是要模型分辨的：退出码同样可能是 137，但 terminated.reason
+# 是 Error 而不是 OOMKilled，且事件里明写 liveness 失败——不能只看退出码就下结论。
+# 就绪条件只能用 restartCount：容器被杀后立刻又起来，waiting reason 时有时无，不可靠。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: restart-liveness
+  namespace: diag-lab
+  labels:
+    lab: restart-liveness-kill
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: restart-liveness
+  template:
+    metadata:
+      labels:
+        app: restart-liveness
+        lab: restart-liveness-kill
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args: ["mkdir -p /www && echo ok > /www/index.html && httpd -f -p 8080 -h /www"]
+          ports:
+            - containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 64Mi

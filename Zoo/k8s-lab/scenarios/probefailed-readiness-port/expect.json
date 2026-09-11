@@ -1,0 +1,19 @@
+{
+  "name": "probefailed-readiness-port",
+  "symptom": "ProbeFailed",
+  "target": { "namespace": "diag-lab", "selector": "app=probefailed-readiness" },
+  "wait": {
+    "phase": "Running",
+    "pod_ready": "False",
+    "timeout_seconds": 90
+  },
+  "evidence_test": "TestScenarioProbeFailedReadinessPort",
+  "report": {
+    "symptoms_must_include": ["ProbeFailed"],
+    "root_cause_category": "probe_port_wrong",
+    "confidence": { "min": 0.8 },
+    "evidence_keywords": ["Readiness probe failed", "connection refused", "8081"],
+    "evidence_min_hits": 2,
+    "must_not_claim": ["容器崩溃退出"]
+  }
+}

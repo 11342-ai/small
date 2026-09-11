@@ -1,0 +1,37 @@
+# 场景：依赖不可达导致的 CrashLoop（第二批量·依赖分支）
+#
+# 容器起来就访问一个不存在的 Service：DNS 解析失败（wget 打印 "bad address"）→ 非零退出 → 退避重启。
+# 与 crashloop-app-error 的分界全在日志内容上：那边是应用自己的断言/命令失败，这边是网络侧的
+# 解析/连接失败。为什么不用"DB 认证失败"这类变体：那需要真起一个有认证的后端（要拉镜像），
+# 而 DNS 失败不需要任何外部依赖、行为确定。
+# 判据也不依赖 wget 的具体文案（bad address / no such host 随 libc 与 busybox 版本变），
+# 断言只看"日志里出现了那个目标主机名 + 一次解析/连接类报错"。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crashloop-dep
+  namespace: diag-lab
+  labels:
+    lab: crashloop-missing-dependency
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crashloop-dep
+  template:
+    metadata:
+      labels:
+        app: crashloop-dep
+        lab: crashloop-missing-dependency
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args: ["wget -T 3 -O- http://db-svc.diag-lab.svc.cluster.local:5432/; exit 1"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 16Mi
+            limits:
+              memory: 32Mi
