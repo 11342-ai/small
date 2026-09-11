@@ -1,0 +1,19 @@
+{
+  "name": "crashloop-app-error",
+  "symptom": "CrashLoopBackOff",
+  "target": { "namespace": "diag-lab", "selector": "app=crashloop-app" },
+  "wait": {
+    "container_last_state_reason": "Error",
+    "container_restart_count_min": 1,
+    "timeout_seconds": 180
+  },
+  "evidence_test": "TestScenarioCrashLoopAppError",
+  "report": {
+    "symptoms_must_include": ["CrashLoopBackOff"],
+    "root_cause_category": "crashloop_app_exit",
+    "confidence": { "min": 0.8 },
+    "evidence_keywords": ["CrashLoopBackOff", "exit", "previous"],
+    "evidence_min_hits": 2,
+    "must_not_claim": ["节点内存不足"]
+  }
+}

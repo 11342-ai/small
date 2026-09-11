@@ -22,6 +22,7 @@ import (
 	"small/internal/command"
 	"small/internal/config"
 	"small/internal/gui"
+	"small/internal/k8s"
 	"small/internal/kb"
 	"small/internal/memory"
 	"small/internal/persona"
@@ -118,6 +119,21 @@ func main() {
 	if err != nil {
 		log.Fatalf("kb store: %v", err)
 	}
+	// K8s 只读采集器（Zoo/model/k8s-diagnosis.md）：产物按会话分目录（~/.small/k8s/<会话 id>/），
+	// 同一会话内重复诊断同一 Pod 以最新一次覆盖。
+	// 它不在核心链路上：集群连不上时打印告警并退化（k8s_* 工具不注册），不阻塞普通对话——
+	// 对齐 Deps 字段为 nil 即退化的既有语义。--session 是本地人工输入，与 session.New 同按
+	// 可信输入处理，不额外清洗（模型提供的 namespace/pod 才做防注入，见 k8s.safeName）。
+	k8sColl, err := k8s.New(k8s.Config{
+		KubeConfig: cfg.KubeConfig,
+		// 多集群：kube_context 为空即用 kubeconfig 的 current-context（见 k8s-diagnosis.md §9）。
+		Context: cfg.KubeContext,
+		Dir:     filepath.Join(cfg.K8sDir, id),
+	})
+	if err != nil {
+		fmt.Printf("告警: K8s 采集器未就绪（%v），本次不注册 k8s_* 工具\n", err)
+		k8sColl = nil
+	}
 	// 工作流分支（workflow.md §3）：embed 资产解析（坏文件 = 开发错误 fail fast），
 	// 分支清单渲染进 base 提示词（契约层），模型按触发条件自动进入对应分支。
 	wfMgr, err := workflow.Load()
@@ -139,6 +155,8 @@ func main() {
 		},
 		// 文档解析工具（tool-lit.md）：缓存根经 config.cache_dir 注入（缺省 ~/.small/cache）。
 		Cache: &builtin.LitConfig{Root: cfg.CacheDir},
+		// K8s 只读采集工具（k8s-diagnosis.md）：采集器未就绪时为 nil，九个 k8s_* 工具不注册。
+		K8s: k8sColl,
 	}); err != nil {
 		log.Fatalf("register builtin tools: %v", err)
 	}
@@ -154,6 +172,21 @@ func main() {
 		"用户要求解析 PDF/Word 等文档时用 doc_parse，解析后先 doc_clean 清洗噪声再 doc_read 细读；整理文档前先询问用户在原文件直接整理还是新开文件；" +
 		"核对两个版本/处理前后文档（如原版 vs 整理产物）时用 file_diff 比对，只需实质内容差异时带 ignore 组合（space/punct/symbol）；" +
 		"访问工作区外路径（如 ~/Pdf）前，先向用户说明要访问的目录/文件并征得同意，确认后再访问；系统敏感目录（/etc /proc /usr 等）一律不访问。"
+	// K8s 工具只在采集器就绪时才会注册，提示词条件拼接——避免"提示词列了工具、注册表里没有"的错配。
+	if k8sColl != nil {
+		base += "可用工具（K8s 只读诊断）：k8s_pod（读 Pod 现状摘要：phase、waiting reason、上次终止原因、restartCount、容器名与节点名）、" +
+			"k8s_events（读事件：调度失败/拉镜像失败/探针失败/容器退避，Warning 优先）、" +
+			"k8s_logs（读容器日志，previous=true 看上次崩溃现场，container 缺省自动选异常容器）、" +
+			"k8s_metrics（读实时用量与占 limit 比例）、k8s_node（读某个节点的状态、可分配量、污点与 Pod 数）、" +
+			"k8s_nodes（列全部节点：标签、taints、余量；Pod 还在 Pending 时没有 node_name，只能用这个看节点侧）、" +
+			"k8s_workload（读工作负载规格真源：limits/probes/replicas/strategy/conditions）。" +
+			"用户报告 Pod 异常（一直重启、起不来、OOMKilled、一直 Pending、探针失败）时：先用 k8s_pod 取症状，" +
+			"再用 k8s_events 看 k8s 卡在哪一步，用 k8s_logs（含 previous）与 k8s_metrics 找证据，" +
+			"必要时用 k8s_node/k8s_nodes/k8s_workload 交叉验证；诊断全程只读，不要尝试修改集群。" +
+			"诊断开始时优先用 k8s_evidence 一次拿全证据（返回里的 notes 带类别：只有 required_failed 才算缺失证据）；" +
+			"得出结论后用 k8s_report 提交（每条证据必须带来源；缺关键证据时写进 missing_evidence 并压低置信度），" +
+			"它会落盘 report.json 与人读的 report.md。"
+	}
 	// 工作流分支清单（workflow.md §3.3）：注入"可用工作流分支"段，模型按触发条件
 	// 自动进入对应分支（如 PDF 解析任务 → pdf 分支），稳定处理而非临场发挥。
 	base += wfMgr.RenderBranch()
@@ -178,6 +211,7 @@ func main() {
 		guiCmd.Register(cmdSession(id))
 		guiCmd.Register(cmdTools(reg))
 		guiCmd.Register(cmdPdf())
+		guiCmd.Register(cmdDiag(k8sColl))
 		guiSrv := gui.New(gui.Config{
 			Addr:      cfg.GUIAddr,
 			FileRoot:  fileRoot,
@@ -242,6 +276,8 @@ func main() {
 	cmdReg.Register(cmdClear(a))
 	cmdReg.Register(cmdPersona(a, mgr, store, id, compose, &p, &metaNeeded))
 	cmdReg.Register(cmdPdf())
+	// /diag：显式进入 k8s 诊断分支（采集器未就绪时命令内部拒绝并提示）。
+	cmdReg.Register(cmdDiag(k8sColl))
 
 	// 4. 多轮对话循环：stdin 逐行输入，"exit" 退出。
 	//    Agent.Run 每轮追加历史并推进一轮；持久化由 agent 在 Run 成功时自动落盘。

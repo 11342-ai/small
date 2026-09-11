@@ -1,0 +1,36 @@
+# 场景：必填配置缺失导致的 CrashLoop（第二批量·配置分支）
+#
+# 应用脚本要求 MODE 这个环境变量，而 Pod spec 里一个 env 都没给：脚本打印 fatal 后 exit 1 →
+# CrashLoopBackOff。选这个形态而不是"非法 flag"：结果一样确定，且顺带验证 env 证据面——
+# 模型要能看出"容器 env 是空的"，而不是凭空猜某个 configMap 有问题。
+# 它也是 crashloop_config_error 的判别样本：日志里说的是"缺什么配置"，不是"连不上谁"，
+# 与 crashloop-missing-dependency 形成对照。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crashloop-cfg
+  namespace: diag-lab
+  labels:
+    lab: crashloop-config-missing-env
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crashloop-cfg
+  template:
+    metadata:
+      labels:
+        app: crashloop-cfg
+        lab: crashloop-config-missing-env
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args: ["if [ -z \"$MODE\" ]; then echo 'fatal: missing required env MODE'; exit 1; fi; echo \"mode=$MODE\"; sleep 3600"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 16Mi
+            limits:
+              memory: 32Mi

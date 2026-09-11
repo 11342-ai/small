@@ -7,6 +7,7 @@
 ```
 small/
 ├── main.go                 # 组合根：装配全部依赖 + 多轮对话 demo
+├── cmd/                    # 独立命令行程序（不进对话链路）：k8seval 场景评测打分器（见 Zoo/model/k8s-diagnosis.md §11）
 ├── internal/
 │   ├── config/             # 配置：config.yml 为主 + 内置默认值兜底，构造注入下游 ()
 │   ├── provider/           # 传输层：DeepSeek HTTP/SSE 调用、重试、超时（含 retry 子包）
@@ -16,6 +17,7 @@ small/
 │   ├── kb/                 # 知识库：goldmark 解析 md 文件树 → 节点/边/反链 + 无环校验，存储部件（见 Zoo/model/kb.md）
 │   ├── persona/            # 人格：go:embed 内置人格文件（frontmatter + 正文），提示词源部件
 │   ├── policy/             # 权限：Pass/Ask 类型（命令与工具共享判定，安全护栏地基，见 cli.md §5）
+│   ├── k8s/                # 故障诊断采集：typed client 只读采集 → 裁剪视图 → 证据包/报告（见 Zoo/model/k8s-diagnosis.md）
 │   └── tool/               # 工具：声明/执行/注册（Registry）+ 内置工具（builtin）
 └── Zoo/                    # 设计文档、约定、踩坑记录
 ```
@@ -44,7 +46,7 @@ gofmt -l .                          # 格式检查（无输出为干净）
 | `--persona <name>` | 对话人格：仅对新建会话生效；恢复会话时以会话 meta 为准 | `default` |
 | `--gui` | 启动 GUI 界面（浏览器 app-server，对话流式 + markdown 展示，见 Zoo/model/gui.md）；监听地址走 config.yml `gui_addr`（缺省 `127.0.0.1:8090`） | 关（CLI） |
 
-对话内命令（用户输入，`/` 开头）：`/help` `/session` `/tools` `/clear` `/persona` `/pdf <文档路径>`（显式进入 pdf 工作流分支，见 Zoo/model/workflow.md）。
+对话内命令（用户输入，`/` 开头）：`/help` `/session` `/tools` `/clear` `/persona` `/pdf <文档路径>`（显式进入 pdf 工作流分支，见 Zoo/model/workflow.md）、`/diag <namespace>/<pod>`（显式进入 k8s 诊断分支，见 Zoo/model/k8s-diagnosis.md）。
 
 | 环境变量 | 含义 | 缺省 |
 |---|---|---|
@@ -60,6 +62,9 @@ session_dir: ~/.small/sessions   # 会话存储目录
 memory_dir: ~/.small/memory      # 长期记忆目录（MEMORY.md + memory/*.md）
 kb_dir: ~/.small/kb              # 知识库目录（md 文件树，见 Zoo/model/kb.md）
 cache_dir: ~/.small/cache        # 文档解析缓存目录（doc_parse 产物，见 Zoo/model/tool-lit.md）
+kube_config: ~/.kube/config      # kubeconfig 路径（k8s 只读诊断用，见 Zoo/model/k8s-diagnosis.md）
+kube_context: ""                 # 目标 kube context（多集群切换）；空 = 用 kubeconfig 的 current-context
+k8s_dir: ~/.small/k8s            # 诊断产物根（证据包与报告，按会话 id 分子目录）
 gui_addr: 127.0.0.1:8090         # GUI 监听地址（--gui 时用，见 Zoo/model/gui.md）
 max_tokens: 32768                # 上下文预算（估算 token，显式 0 禁用截断）
 max_tool_rounds: 20              # 单次 Run 工具调用轮次上限（显式 0 不限）
@@ -77,6 +82,37 @@ cloc . --not-match-f='_test\.go$'
 cloc . --not-match-f='_test\.go$' --not-match-d='^\.'      # 同时排除隐藏目录（如 .git/.idea）
 cloc . --include-lang=Go --not-match-f='_test\.go$'         # 只看 Go，忽略 md/yml 等
 cloc . --by-file --not-match-f='_test\.go$'                 # 逐文件明细
+
+# 0) 起集群（脚本会检查，不会代你起）
+minikube start && minikube addons enable metrics-server
+# 1) 建场景：apply yaml + 等两个故障目标进入 ImagePullBackOff
+bash Zoo/k8s-lab/smoke.sh up
+# 2) 跑断言：即 go test -tags k8slab ./internal/k8s/ -run Lab -v
+bash Zoo/k8s-lab/smoke.sh test
+# 3) 收场景
+bash Zoo/k8s-lab/smoke.sh down
+
+# 第 3 批场景集（评测用，与冒烟台并存；14 个场景已落地）
+bash Zoo/k8s-lab/scenario.sh list                       # 列出场景与目标 selector
+bash Zoo/k8s-lab/scenario.sh up crashloop-app-error     # 起场景并等就绪（按 expect.json 的 wait）
+bash Zoo/k8s-lab/scenario.sh target crashloop-app-error # 打印 ns/pod（喂给 /diag）
+bash Zoo/k8s-lab/scenario.sh down-all                   # 清所有带 lab 标签的场景对象 + 跑各场景的 teardown 钩子
+                                                        # （钩子改的可能是集群级对象，如 taint 场景打在节点上的 taint）
+
+# oom-heap-misconfig 的镜像准备（一次性；之后场景离线可跑）
+minikube image load eclipse-temurin:17
+
+# 场景集的采集层断言（tag k8slab，需集群；未起的场景自动 Skip）
+go test -tags k8slab ./internal/k8s/ -run TestScenarios -count=1 -v
+
+# 场景打分（读产物契约，不 import internal；口径见 Zoo/model/k8s-diagnosis.md §11）
+go run ./cmd/k8seval score --expect Zoo/k8s-lab/scenarios/oom-limit-too-small/expect.json \
+  --report <report.json> --evidence <evidence.json> --out <run-dir>
+go run ./cmd/k8seval summary --out <run-dir>   # 汇总表 + summary.md
+
+# 端到端评测（需 minikube + DEEPSEEK_API_KEY）：逐场景起→跑 /diag→打分→收，产物落 out/<run-id>/
+bash Zoo/k8s-lab/eval.sh                        # 全部场景
+bash Zoo/k8s-lab/eval.sh --keep oom-limit-too-small   # 只跑一个且跑完不收场景（排查用）
 ```
 
 ## 代码风格与约定
@@ -103,7 +139,7 @@ cloc . --by-file --not-match-f='_test\.go$'                 # 逐文件明细
 
 ## 架构与模块边界
 
-- **依赖严格单向**：`main → agent → provider → config`，`agent → session`，`agent → tool`，`agent → policy`，`tool/builtin → policy`，`provider → retry`（子包），`tool/builtin → memory`（叶子）。禁止反向/循环依赖。
+- **依赖严格单向**：`main → agent → provider → config`，`agent → session`，`agent → tool`，`agent → policy`，`provider → retry`（子包），`tool/builtin → 叶子部件`（`tool`/`policy`/`memory`/`kb`/`k8s`）。禁止反向/循环依赖。
 - **职责边界**：
   - `provider`（传输层）：只做 HTTP 语义，不感知业务。
   - `agent`（领域层）：只管循环/历史/自动持久化，不感知 provider DTO。
@@ -120,7 +156,7 @@ cloc . --by-file --not-match-f='_test\.go$'                 # 逐文件明细
 3. **流式"拿到 2xx 后绝不重试"**——否则重复已吐出的 token。
 4. **流中失败不回退非流式**（adapter 层同样）——失败只能透传错误，由调用方重试整个对话。
 5. API key 等机密**绝不入库**（提交前 grep 检查）。
-6. `builtin` 生产代码只允许 import `tool`/`memory`/`policy`，**不得反向依赖** `agent`/`session`/`provider`/`config`（`imports_test.go` 固化；测试文件不受限，可自由 import 做集成验证）。
+6. `builtin` 生产代码只允许 import 叶子部件（`tool`/`policy`/`memory`/`kb`/`k8s`），**不得反向依赖** `agent`/`session`/`provider`/`config`（`imports_test.go` 固化；测试文件不受限，可自由 import 做集成验证）。
 7. 合并门槛：`go test -race ./...`、`go vet`、`gofmt` 全绿。
 
 ## 重要决策与取舍

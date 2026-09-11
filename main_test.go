@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"small/internal/k8s"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -60,6 +62,25 @@ func TestTruncate(t *testing.T) {
 	for _, c := range cases {
 		if got := truncate(c.in, c.n); got != c.want {
 			t.Errorf("truncate(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
+	}
+}
+
+// TestCmdDiag /diag 的前置校验：未接入集群与参数格式错都在命令层拦住，不注入消息。
+// 注意用零值 Collector 只走参数分支——校验失败发生在触达采集器之前，不会打到 nil 客户端。
+func TestCmdDiag(t *testing.T) {
+	ctx := context.Background()
+
+	// 采集器未就绪：提示去查 kubeconfig，而不是让模型去猜。
+	if _, err := cmdDiag(nil).Run(ctx, []string{"default/web-0"}); err == nil {
+		t.Error("coll 为 nil 时应报错提示 K8s 未接入")
+	}
+
+	// 参数缺失或格式错：全部应在命令层报错（不触达采集器）。
+	coll := &k8s.Collector{}
+	for _, args := range [][]string{nil, {""}, {"web-0"}, {"/web-0"}, {"default/"}} {
+		if _, err := cmdDiag(coll).Run(ctx, args); err == nil {
+			t.Errorf("args=%v 应报参数错误", args)
 		}
 	}
 }

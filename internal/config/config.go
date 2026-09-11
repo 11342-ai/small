@@ -30,6 +30,10 @@ const (
 	// defaultCacheDir 缺省文档解析缓存目录（tool-lit.md：doc_parse 产物落盘处，
 	// 受控目录，解析只读+写缓存 = Pass 权限）。
 	defaultCacheDir = "~/.small/cache"
+	// defaultKubeConfig 缺省 kubeconfig 路径（k8s 只读采集器用它连集群，k8s-diagnosis.md）。
+	defaultKubeConfig = "~/.kube/config"
+	// defaultK8sDir 缺省诊断产物根（证据包 + 报告落盘处，组合根按会话 id 建子目录）。
+	defaultK8sDir = "~/.small/k8s"
 	// defaultMaxTokens 缺省上下文预算：32k token，正好是 64k 上下文的一半，
 	// 预留一半余量防溢出（含回复输出与工具声明）；本地对话足够。
 	defaultMaxTokens = 32768
@@ -56,6 +60,12 @@ type Config struct {
 	KbDir string
 	// CacheDir 文档解析缓存目录（doc_parse 产物落盘处，受控目录）。
 	CacheDir string
+	// KubeConfig kubeconfig 路径（k8s 采集器用它连集群；只读诊断，不写集群）。
+	KubeConfig string
+	// KubeContext 目标 kube context（多集群切换；空 = 用 kubeconfig 的 current-context）。
+	KubeContext string
+	// K8sDir 诊断产物根（证据包与报告落盘处；组合根按会话 id 建子目录）。
+	K8sDir string
 	// MaxToolRounds 单次 Run 工具调用轮次上限（agent.WithMaxToolRounds）；<=0 表示不限。
 	MaxToolRounds int
 	// GUIAddr GUI 监听地址（gui.md §4.5；--gui 启动时用，仅本机服务）。
@@ -67,12 +77,15 @@ type Config struct {
 // fileConfig 配置文件的可选字段。APIKey 不在此列：机密走环境变量更安全。
 // 目录/预算等以配置文件为准（文件 > 内置默认值）；模型例外，DEEPSEEK_MODEL 仍可覆盖文件。
 type fileConfig struct {
-	Model      string `yaml:"model"`
-	SessionDir string `yaml:"session_dir"`
-	MemoryDir  string `yaml:"memory_dir"`
-	KbDir      string `yaml:"kb_dir"`
-	CacheDir   string `yaml:"cache_dir"`
-	GUIAddr    string `yaml:"gui_addr"`
+	Model       string `yaml:"model"`
+	SessionDir  string `yaml:"session_dir"`
+	MemoryDir   string `yaml:"memory_dir"`
+	KbDir       string `yaml:"kb_dir"`
+	CacheDir    string `yaml:"cache_dir"`
+	KubeConfig  string `yaml:"kube_config"`
+	KubeContext string `yaml:"kube_context"`
+	K8sDir      string `yaml:"k8s_dir"`
+	GUIAddr     string `yaml:"gui_addr"`
 	// 指针区分"未设置"与"显式 0"（显式 0 = 不限，未设置 = 用默认值；对齐 max_tokens）。
 	MaxTokens     *int `yaml:"max_tokens"`
 	MaxToolRounds *int `yaml:"max_tool_rounds"`
@@ -110,6 +123,14 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	kubeConfig, err := expandHome(firstNonEmpty(file.KubeConfig, defaultKubeConfig))
+	if err != nil {
+		return nil, err
+	}
+	k8sDir, err := expandHome(firstNonEmpty(file.K8sDir, defaultK8sDir))
+	if err != nil {
+		return nil, err
+	}
 	maxTokens := defaultMaxTokens
 	if file.MaxTokens != nil {
 		// 指针区分"未设置"与"显式 0"：显式 0 = 禁用截断。
@@ -122,7 +143,12 @@ func Load() (*Config, error) {
 	}
 	guiAddr := firstNonEmpty(file.GUIAddr, defaultGUIAddr)
 
-	return &Config{Model: model, APIKey: apiKey, SessionDir: sessionDir, MemoryDir: memoryDir, KbDir: kbDir, CacheDir: cacheDir, MaxTokens: maxTokens, MaxToolRounds: maxRounds, GUIAddr: guiAddr}, nil
+	return &Config{
+		Model: model, APIKey: apiKey,
+		SessionDir: sessionDir, MemoryDir: memoryDir, KbDir: kbDir, CacheDir: cacheDir,
+		KubeConfig: kubeConfig, KubeContext: file.KubeContext, K8sDir: k8sDir,
+		MaxTokens: maxTokens, MaxToolRounds: maxRounds, GUIAddr: guiAddr,
+	}, nil
 }
 
 // loadFile 读取默认配置文件（路径写死 ~/.small/config.yml）；不存在时返回零值（等价于未配置）。

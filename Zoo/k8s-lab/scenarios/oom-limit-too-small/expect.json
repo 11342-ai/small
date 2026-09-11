@@ -1,0 +1,18 @@
+{
+  "name": "oom-limit-too-small",
+  "symptom": "OOMKilled",
+  "target": { "namespace": "diag-lab", "selector": "app=oom-app" },
+  "wait": {
+    "container_last_state_reason": "OOMKilled",
+    "timeout_seconds": 180
+  },
+  "evidence_test": "TestScenarioOOMLimitTooSmall",
+  "report": {
+    "symptoms_must_include": ["OOMKilled"],
+    "root_cause_category": "oom_limit_too_small",
+    "confidence": { "min": 0.8 },
+    "evidence_keywords": ["OOMKilled", "limits", "64Mi"],
+    "evidence_min_hits": 2,
+    "must_not_claim": ["节点内存不足"]
+  }
+}

@@ -36,6 +36,16 @@ var ToolPermissions = map[string]policy.Permission{
 	"doc_parse":          policy.Pass, // 解析只读 + 写受控缓存目录（tool-lit.md §5，类比 memory_save 写归档层）
 	"doc_read":           policy.Pass, // 只读缓存产物，无副作用
 	"doc_clean":          policy.Pass, // 原地清洗缓存产物（受控缓存目录内），无工作区副作用
+
+	"k8s_pod":      policy.Pass,
+	"k8s_workload": policy.Pass,
+	"k8s_events":   policy.Pass,
+	"k8s_logs":     policy.Pass,
+	"k8s_metrics":  policy.Pass,
+	"k8s_node":     policy.Pass,
+	"k8s_nodes":    policy.Pass, // 列全部节点（只读），Pending 归因的入口
+	"k8s_evidence": policy.Pass, // 只读采集 + 写自有受控目录（~/.small/k8s），对集群无副作用
+	"k8s_report":   policy.Pass, // 只写自有受控目录的报告文件，对集群无副作用
 }
 
 // validateToolPermissions 校验：注册的每个工具都必须在权限表内——防"新增工具漏登记 →

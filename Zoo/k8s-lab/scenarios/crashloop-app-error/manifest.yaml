@@ -1,0 +1,33 @@
+# 场景：应用启动即失败（CrashLoopBackOff 的最常见形态）
+#
+# 容器起来就跑 `exit 1`，kubelet 按退避重启 → CrashLoopBackOff，lastState 是 Error(exitCode=1)。
+# 选它做首批：不依赖任何镜像拉取之外的网络条件，是六类症状里最基础的一条。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crashloop-app
+  namespace: diag-lab
+  labels:
+    lab: crashloop-app-error
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crashloop-app
+  template:
+    metadata:
+      labels:
+        app: crashloop-app
+        lab: crashloop-app-error
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args: ["echo 'fatal: cannot load /etc/app/config.yaml'; exit 1"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 16Mi
+            limits:
+              memory: 32Mi

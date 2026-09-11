@@ -1,0 +1,18 @@
+{
+  "name": "pending-insufficient-resources",
+  "symptom": "Pending",
+  "target": { "namespace": "diag-lab", "selector": "app=pending-res" },
+  "wait": {
+    "phase": "Pending",
+    "timeout_seconds": 60
+  },
+  "evidence_test": "TestScenarioPendingInsufficientResources",
+  "report": {
+    "symptoms_must_include": ["Pending"],
+    "root_cause_category": "pending_insufficient_resources",
+    "confidence": { "min": 0.8 },
+    "evidence_keywords": ["FailedScheduling", "Insufficient", "requests"],
+    "evidence_min_hits": 2,
+    "must_not_claim": []
+  }
+}

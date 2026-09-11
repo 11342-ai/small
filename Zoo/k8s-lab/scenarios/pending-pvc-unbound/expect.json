@@ -1,0 +1,18 @@
+{
+  "name": "pending-pvc-unbound",
+  "symptom": "Pending",
+  "target": { "namespace": "diag-lab", "selector": "app=pending-pvc" },
+  "wait": {
+    "phase": "Pending",
+    "timeout_seconds": 60
+  },
+  "evidence_test": "TestScenarioPendingPVCUnbound",
+  "report": {
+    "symptoms_must_include": ["Pending"],
+    "root_cause_category": "pending_pvc_unbound",
+    "confidence": { "min": 0.8 },
+    "evidence_keywords": ["lab-pending-claim", "lab-no-such-sc", "unbound"],
+    "evidence_min_hits": 2,
+    "must_not_claim": ["节点余量不足", "镜像拉取失败"]
+  }
+}

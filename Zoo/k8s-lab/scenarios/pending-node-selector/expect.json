@@ -1,0 +1,18 @@
+{
+  "name": "pending-node-selector",
+  "symptom": "Pending",
+  "target": { "namespace": "diag-lab", "selector": "app=pending-selector" },
+  "wait": {
+    "phase": "Pending",
+    "timeout_seconds": 60
+  },
+  "evidence_test": "TestScenarioPendingNodeSelector",
+  "report": {
+    "symptoms_must_include": ["Pending"],
+    "root_cause_category": "pending_node_selector",
+    "confidence": { "min": 0.8 },
+    "evidence_keywords": ["lab-node-role", "does-not-exist", "FailedScheduling"],
+    "evidence_min_hits": 2,
+    "must_not_claim": ["节点余量不足", "PVC 未绑定"]
+  }
+}

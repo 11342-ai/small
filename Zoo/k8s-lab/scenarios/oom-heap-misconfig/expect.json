@@ -1,0 +1,19 @@
+{
+  "name": "oom-heap-misconfig",
+  "symptom": "OOMKilled",
+  "target": { "namespace": "diag-lab", "selector": "app=oom-heap" },
+  "wait": {
+    "container_last_state_reason": "OOMKilled",
+    "container_restart_count_min": 1,
+    "timeout_seconds": 240
+  },
+  "evidence_test": "TestScenarioOOMHeapMisconfig",
+  "report": {
+    "symptoms_must_include": ["OOMKilled"],
+    "root_cause_category": "oom_heap_misconfig",
+    "confidence": { "min": 0.8 },
+    "evidence_keywords": ["-Xmx256m", "128Mi", "OOMKilled"],
+    "evidence_min_hits": 2,
+    "must_not_claim": ["节点内存不足"]
+  }
+}
