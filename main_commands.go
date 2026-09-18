@@ -82,13 +82,19 @@ func cmdPdf() command.CommandSpec {
 // cmdDiag 显式进入 k8s 诊断分支：/diag <namespace>/<pod>。
 // 与 /pdf 同款注入机制（errInject）：命令只做参数校验与"目标可达性预检"，诊断本身由 agent
 // 按 k8s-diag 分支执行（见 Zoo/model/k8s-diagnosis.md §6）。
-// coll 为 nil 表示集群未接入（采集器构造失败时组合根传 nil）：直接拒绝，别让模型去猜。
-func cmdDiag(coll *k8s.Collector) command.CommandSpec {
+// coll 为 nil 表示集群未接入（构造失败或启动期探测失败，组合根传 nil）：直接拒绝，别让模型去猜。
+// reason 是"未接入"的具体原因（组合根拼好的一句话）：kubeconfig 读不到、集群不可达要用户做的事
+// 不同，故不在命令层写死文案——写死一句"检查 kubeconfig"在集群没起时是误导（§16.4）。
+func cmdDiag(coll *k8s.Collector, reason string) command.CommandSpec {
 	return command.CommandSpec{
 		Name: "/diag", Usage: "诊断 Pod 异常：/diag <namespace>/<pod>",
 		Run: func(ctx context.Context, args []string) (string, error) {
 			if coll == nil {
-				return "", errors.New("K8s 未接入：检查 kubeconfig（config.yml 的 kube_config，缺省 ~/.kube/config）后重启")
+				msg := reason
+				if msg == "" {
+					msg = "检查 kubeconfig（config.yml 的 kube_config，缺省 ~/.kube/config）后重启"
+				}
+				return "", errors.New("K8s 未接入：" + msg)
 			}
 			if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
 				return "", errors.New("用法：/diag <namespace>/<pod>（如 /diag default/web-0）")
@@ -103,7 +109,13 @@ func cmdDiag(coll *k8s.Collector) command.CommandSpec {
 			probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 			if _, err := coll.Pod(probeCtx, ns, pod); err != nil {
-				return "", fmt.Errorf("读不到目标 Pod %s/%s：%v", ns, pod, err)
+				// 连接类失败给一句有结论的话（集群不可达/超时），别让用户对着 dial 错误猜；
+				// 建议只在连接类失败时补——业务错误（Pod 不存在、权限不足）套同一句会给出走不通的下一步。
+				advise := ""
+				if k8s.IsConnFailure(err) {
+					advise = "；确认集群可达（kubectl 能连上）后重试"
+				}
+				return "", fmt.Errorf("读不到目标 Pod %s/%s：%s%s", ns, pod, k8s.ExplainError(err), advise)
 			}
 			msg := "请按 k8s-diag 工作流诊断 Pod " + ns + "/" + pod +
 				"（用户已通过 /diag 命令显式进入 k8s-diag 分支：先用 k8s_evidence 一次拿全证据，" +

@@ -24,6 +24,13 @@ import (
 //go:embed workflows/*.md
 var files embed.FS
 
+// 能力名：workflow 资产 frontmatter 的 requires 值，与组合根传给 RenderBranchFor 的
+// "可用能力集"键对齐。能力名是资产词表，归资产所在包持有（见 k8s-diagnosis.md §16.5）。
+const (
+	// CapK8s k8s 只读诊断能力（采集器就绪）：k8s-diag 分支依赖它。
+	CapK8s = "k8s"
+)
+
 // Workflow 一个任务工作流分支：元数据 + 步骤正文。
 type Workflow struct {
 	// Name 唯一名（如 pdf），触发判断与命令的标识。
@@ -38,6 +45,9 @@ type Workflow struct {
 	Output string
 	// Stop 停止条件（正常结束 + 异常兜底，模型须遵守）。
 	Stop string
+	// Requires 该分支依赖的启动期能力名（空 = 无条件可用）。能力不满足时分支整段不注入提示词——
+	// 避免"提示词里有分支、对应工具却没注册"（见 Zoo/model/k8s-diagnosis.md §16.5）。
+	Requires string
 	// Steps 步骤正文（markdown，渲染进分支清单）。
 	Steps string
 }
@@ -95,6 +105,7 @@ func parseWorkflow(fileName string, data []byte) (Workflow, error) {
 		Input       string `yaml:"input"`
 		Output      string `yaml:"output"`
 		Stop        string `yaml:"stop"`
+		Requires    string `yaml:"requires"`
 	}
 	body := s
 	if strings.HasPrefix(s, "---") {
@@ -126,6 +137,7 @@ func parseWorkflow(fileName string, data []byte) (Workflow, error) {
 		Input:       meta.Input,
 		Output:      meta.Output,
 		Stop:        meta.Stop,
+		Requires:    meta.Requires,
 		Steps:       body,
 	}, nil
 }
@@ -147,31 +159,42 @@ func (m *Manager) List() []Workflow {
 	return out
 }
 
-// RenderBranch 渲染"可用工作流分支"提示词段（注入 base 契约层）：
+// branchIntro 分支段引言：说明进入/收尾的声明纪律（模型据此在首句声明进入、产出后汇报）。
+const branchIntro = "可用工作流分支（用户任务命中触发条件时，第一句回复以 [进入分支:分支名] 开头声明进入该分支（如 [进入分支:pdf]），严格按步骤执行；产出后向用户汇报并等待确认，汇报须包含 [分支完成:分支名]）："
+
+// RenderBranch 渲染"可用工作流分支"提示词段，等价于"全部能力可用"（零回归，见 RenderBranchFor）。
+func (m *Manager) RenderBranch() string { return m.RenderBranchFor(nil) }
+
+// RenderBranchFor 渲染"可用工作流分支"提示词段（注入 base 契约层）：
 // 固定格式 = 引言 + 每个分支的 名称/触发/输入/输出/停止/步骤。
-// 无分支时返回空串（组合根不追加，零回归）。
-func (m *Manager) RenderBranch() string {
-	if len(m.order) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("可用工作流分支（用户任务命中触发条件时，第一句回复以 [进入分支:分支名] 开头声明进入该分支（如 [进入分支:pdf]），严格按步骤执行；产出后向用户汇报并等待确认，汇报须包含 [分支完成:分支名]）：")
+// available 为 nil 表示不做能力裁剪；否则 Requires 非空且能力不满足的分支整段不注入——
+// workflow 是编译期资产、能力是运行期事实，两者由组合根在这里对齐（能力名见 CapK8s，
+// 见 Zoo/model/k8s-diagnosis.md §16.5）。全部被裁掉时返回空串（组合根不追加空段）。
+func (m *Manager) RenderBranchFor(available map[string]bool) string {
+	var items strings.Builder
 	for _, n := range m.order {
 		w := m.workflows[n]
-		fmt.Fprintf(&b, "\n[%s] %s", w.Name, w.Description)
+		// available 为 nil = 不裁剪（nil map 查找恒为 false，故必须显式判 nil）。
+		if w.Requires != "" && available != nil && !available[w.Requires] {
+			continue
+		}
+		fmt.Fprintf(&items, "\n[%s] %s", w.Name, w.Description)
 		if w.Trigger != "" {
-			fmt.Fprintf(&b, "\n- 触发：%s", w.Trigger)
+			fmt.Fprintf(&items, "\n- 触发：%s", w.Trigger)
 		}
 		if w.Input != "" {
-			fmt.Fprintf(&b, "\n- 输入：%s", w.Input)
+			fmt.Fprintf(&items, "\n- 输入：%s", w.Input)
 		}
 		if w.Output != "" {
-			fmt.Fprintf(&b, "\n- 输出：%s", w.Output)
+			fmt.Fprintf(&items, "\n- 输出：%s", w.Output)
 		}
 		if w.Stop != "" {
-			fmt.Fprintf(&b, "\n- 停止：%s", w.Stop)
+			fmt.Fprintf(&items, "\n- 停止：%s", w.Stop)
 		}
-		fmt.Fprintf(&b, "\n- 步骤：\n%s", w.Steps)
+		fmt.Fprintf(&items, "\n- 步骤：\n%s", w.Steps)
 	}
-	return b.String()
+	if items.Len() == 0 {
+		return ""
+	}
+	return branchIntro + items.String()
 }

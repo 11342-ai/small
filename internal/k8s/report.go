@@ -18,7 +18,8 @@ import (
 )
 
 // ReportSchemaVersion 报告结构版本：字段增减时递增，供回放与评测对齐口径。
-const ReportSchemaVersion = 1
+// 2：target 增 api_server（2026-09-19，见 k8s-diagnosis.md §17.6）。
+const ReportSchemaVersion = 2
 
 // RootCauseCategory 一个根因类别：值（进报告 category 字段与 schema enum）与一行释义
 // （进 schema 图例——strict 子集里 enum 没有逐值说明，含义只能写在 description 里）。
@@ -162,8 +163,8 @@ type AlternativeItem struct {
 }
 
 // SaveReportView 补齐元信息后落盘 JSON 与 markdown，返回两个路径。
-// 补的是"本该由系统给"的三项：schema_version、generated_at、target.context（采集器配置里的
-// kube context）——模型只负责 namespace/pod 与结论本身。
+// 补的是"本该由系统给"的四项：schema_version、generated_at、target.context 与 target.api_server
+// ——模型只负责 namespace/pod 与结论本身，"这份报告来自哪个集群的哪个端点"由采集器回答。
 func (c *Collector) SaveReportView(r ReportView) (string, string, error) {
 	if r.SchemaVersion == 0 {
 		r.SchemaVersion = ReportSchemaVersion
@@ -173,6 +174,10 @@ func (c *Collector) SaveReportView(r ReportView) (string, string, error) {
 	}
 	if r.Target.Context == "" {
 		r.Target.Context = c.cfg.Context
+	}
+	// 端点地址与 context 一样属于"本该由系统给"的信息：模型不知道它，产物却要能回答"这份证据来自哪"。
+	if r.Target.APIServer == "" {
+		r.Target.APIServer = c.apiServer
 	}
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
@@ -192,6 +197,10 @@ func RenderReportMD(r ReportView) string {
 	fmt.Fprintf(&b, "Target: %s/%s", r.Target.Namespace, r.Target.Pod)
 	if r.Target.Workload != "" {
 		fmt.Fprintf(&b, "（%s）", r.Target.Workload)
+	}
+	// 端点地址要出现在人读报告里：只有 context 名看不出连的是哪个 IP（§17.6）。
+	if r.Target.APIServer != "" {
+		fmt.Fprintf(&b, " @ %s", r.Target.APIServer)
 	}
 	b.WriteString("\n")
 	if len(r.Symptoms) > 0 {

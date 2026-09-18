@@ -40,20 +40,27 @@ func pickAnnotations(m map[string]string) map[string]string {
 	return out
 }
 
-// rfc3339 格式化元数据时间（零值返回空串，避免 JSON 里出现 "0001-01-01T00:00:00Z" 噪声）。
-func rfc3339(t metav1.Time) string {
+// fmtTime 格式化时间（零值返回空串，避免 JSON 里出现 "0001-01-01T00:00:00Z" 噪声）。
+// 这里是"时间怎么渲染"的唯一实现，下面两个只做类型适配，零值语义不存在第二份。
+func fmtTime(t time.Time) string {
 	if t.IsZero() {
 		return ""
 	}
-	return t.Time.Format(time.RFC3339)
+	return t.Format(time.RFC3339)
 }
 
-// rfc3339Ptr 同上，用于可选时间字段（deletionTimestamp 等）。
+// rfc3339 适配 metav1.Time 字段（CreationTimestamp 与各类条件时间）。
+func rfc3339(t metav1.Time) string {
+	return fmtTime(t.Time)
+}
+
+// rfc3339Ptr 适配可选时间字段（deletionTimestamp 等）：metav1.Time.IsZero 对 nil 接收者
+// 也返回 true（apimachinery 的约定），所以不必再单独判 nil。
 func rfc3339Ptr(t *metav1.Time) string {
-	if t == nil {
+	if t.IsZero() {
 		return ""
 	}
-	return rfc3339(*t)
+	return fmtTime(t.Time)
 }
 
 // fmtCPU 把 CPU 数量转成人读形式（核心数或毫核："1" / "250m"）。

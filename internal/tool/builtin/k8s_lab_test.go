@@ -138,12 +138,17 @@ func TestK8sToolsAgainstCluster(t *testing.T) {
 			t.Errorf("证据包文件不存在: %v", err)
 		}
 		// k8s_report：回灌"落盘路径 + 渲染后的 md"（不是 JSON，故用宽松版断言）。
+		// 证据给两条、两个来源：≥0.80 的置信度必须满足 §7.2 的硬校验（checkConfidenceRules），
+		// 否则会被打回——夹具要跟规则一起走，别让"规则生效"在冒烟里表现成红灯。
 		rep := execToolText(t, K8sReport(coll), map[string]any{
 			"namespace":  "diag-lab",
 			"pod":        "badimg",
 			"symptoms":   []string{"ImagePullBackOff"},
 			"root_cause": map[string]any{"summary": "镜像 tag 不存在", "category": "imagepull_tag_missing", "confidence": 0.9},
-			"evidence":   []map[string]any{{"source": "k8s_events", "ref": "badimg", "excerpt": "not found", "supports": "拉取镜像失败"}},
+			"evidence": []map[string]any{
+				{"source": "k8s_events", "ref": "badimg", "excerpt": "not found", "supports": "拉取镜像失败"},
+				{"source": "k8s_pod", "ref": "badimg", "excerpt": "waiting reason=ImagePullBackOff", "supports": "容器从未启动，符合拉取失败"},
+			},
 			"suggestions": []map[string]any{
 				{"action": "改用存在的镜像 tag"},
 			},

@@ -14,7 +14,7 @@
 |---|---|---|
 | 调用方 | 模型（function calling） | 用户（直接敲） |
 | 参数 | JSON Schema（provider 契约） | 命令行文本 |
-| 结果 | `Result{Data,IsError}` 回灌模型 | 打印给用户 |
+| 结果 | `Result.Data` 回灌模型（失败也靠文案自述；`IsError` 只服务展示/轨迹层） | 打印给用户 |
 
 不复用 `tool` 包（Spec 绑 JSON Schema，混入会污染语义），建平行结构。
 

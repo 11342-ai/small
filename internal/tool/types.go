@@ -25,9 +25,12 @@ type Spec struct {
 	Parameters json.RawMessage
 }
 
-// Result 一次执行的输出，回灌模型供下一轮推理。
+// Result 一次执行的输出：Data 回灌模型供下一轮推理；IsError 供展示层与轨迹判断。
+// 注意 IsError 不进模型上下文——tool 消息在协议里只有 content 能承载信息（见 cli.md §2、
+// k8s-diagnosis.md §14 决策 20），所以"这次失败了"必须由 Data 的文案自己说清。
 type Result struct {
-	// Data 回灌文本（JSON 或纯文本）。
+	// Data 回灌文本（JSON 或纯文本）。失败时也要写出结论（如"集群不可达（connection refused）"），
+	// 不能只丢原始错误——模型没有第二个通道能看出这是失败。
 	Data string
 	// IsError 标记业务失败：工具执行"失败"（如 API 404、参数非法）作为
 	// 结果正常返回，由模型自行决定重试或换策略；仅框架级错误

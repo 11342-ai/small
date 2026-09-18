@@ -71,15 +71,23 @@ func TestTruncate(t *testing.T) {
 func TestCmdDiag(t *testing.T) {
 	ctx := context.Background()
 
-	// 采集器未就绪：提示去查 kubeconfig，而不是让模型去猜。
-	if _, err := cmdDiag(nil).Run(ctx, []string{"default/web-0"}); err == nil {
-		t.Error("coll 为 nil 时应报错提示 K8s 未接入")
+	// 采集器未就绪：把组合根给的"未接入原因"原样说出去（集群不可达时不该误导用户去查 kubeconfig）。
+	reason := "连接 apiserver 失败（connect: connection refused）；确认集群可达（kubectl 能连上）后重启"
+	_, err := cmdDiag(nil, reason).Run(ctx, []string{"default/web-0"})
+	if err == nil || !strings.Contains(err.Error(), reason) {
+		t.Errorf("coll 为 nil 时应报错并带上具体原因，实际: %v", err)
+	}
+
+	// 原因缺省（兜底路径）：报错也不能是空话——要给出可执行的下一步。
+	_, err = cmdDiag(nil, "").Run(ctx, []string{"default/web-0"})
+	if err == nil || !strings.Contains(err.Error(), "kube_config") {
+		t.Errorf("原因缺省时应给出兜底提示（检查 kube_config），实际: %v", err)
 	}
 
 	// 参数缺失或格式错：全部应在命令层报错（不触达采集器）。
 	coll := &k8s.Collector{}
 	for _, args := range [][]string{nil, {""}, {"web-0"}, {"/web-0"}, {"default/"}} {
-		if _, err := cmdDiag(coll).Run(ctx, args); err == nil {
+		if _, err := cmdDiag(coll, "").Run(ctx, args); err == nil {
 			t.Errorf("args=%v 应报参数错误", args)
 		}
 	}

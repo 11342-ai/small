@@ -18,7 +18,9 @@ import (
 func (c *Collector) Collect(ctx context.Context, ns, pod string) (*Evidence, error) {
 	ev := &Evidence{
 		CollectedAt: time.Now().Format(time.RFC3339),
-		Target:      Target{Context: c.cfg.Context, Namespace: ns, Pod: pod},
+		// Context/APIServer 取归一化后的值（New 已把 kubeconfig 的 current-context 与 server 补进来，
+		// 见 Zoo/model/k8s-diagnosis.md §16.3、§17.6）：回放时要能分辨这份证据来自哪个集群的哪个端点。
+		Target: Target{APIServer: c.apiServer, Context: c.cfg.Context, Namespace: ns, Pod: pod},
 	}
 	pv, err := c.Pod(ctx, ns, pod)
 	if err != nil {
@@ -33,7 +35,7 @@ func (c *Collector) Collect(ctx context.Context, ns, pod string) (*Evidence, err
 		if !hasControllerOwner(pv) {
 			ev.note(NoteNoData, "该 Pod 无 controller owner（裸 Pod），没有上层工作负载可读")
 		} else {
-			ev.note(NoteRequired, "工作负载规格未取到: %v", err)
+			ev.note(NoteRequired, "工作负载规格未取到: %s", ExplainError(err))
 		}
 	} else {
 		ev.Workload = w
@@ -41,7 +43,7 @@ func (c *Collector) Collect(ctx context.Context, ns, pod string) (*Evidence, err
 	}
 
 	if events, err := c.Events(ctx, ns, pod, pv.UID, 0, 0); err != nil {
-		ev.note(NoteRequired, "事件未取到: %v", err)
+		ev.note(NoteRequired, "事件未取到: %s", ExplainError(err))
 	} else {
 		ev.Events = events
 	}
@@ -52,7 +54,7 @@ func (c *Collector) Collect(ctx context.Context, ns, pod string) (*Evidence, err
 	for _, q := range LogTargets(pv) {
 		lv, err := c.Logs(ctx, ns, pod, q)
 		if err != nil {
-			ev.note(logFailureKind(err), "日志未取到（容器 %s，previous=%v）: %v", q.Container, q.Previous, err)
+			ev.note(logFailureKind(err), "日志未取到（容器 %s，previous=%v）: %s", q.Container, q.Previous, ExplainError(err))
 			continue
 		}
 		ev.Logs = append(ev.Logs, *lv)
@@ -62,14 +64,14 @@ func (c *Collector) Collect(ctx context.Context, ns, pod string) (*Evidence, err
 	}
 
 	if m, err := c.PodMetrics(ctx, ns, pod); err != nil {
-		ev.note(NoteOptional, "Pod 指标未取到: %v", err)
+		ev.note(NoteOptional, "Pod 指标未取到: %s", ExplainError(err))
 	} else {
 		ev.Metrics = m
 	}
 
 	if pv.NodeName != "" {
 		if n, err := c.Node(ctx, pv.NodeName); err != nil {
-			ev.note(NoteRequired, "节点信息未取到（%s）: %v", pv.NodeName, err)
+			ev.note(NoteRequired, "节点信息未取到（%s）: %s", pv.NodeName, ExplainError(err))
 		} else {
 			// 节点分配汇总失败时，Node 自身摘要仍有效，但余量不可信——单独记一条降级说明。
 			if n.AllocationError != "" {
@@ -78,7 +80,7 @@ func (c *Collector) Collect(ctx context.Context, ns, pod string) (*Evidence, err
 			ev.Node = n
 		}
 		if nm, err := c.NodeMetrics(ctx, pv.NodeName); err != nil {
-			ev.note(NoteOptional, "节点指标未取到（%s）: %v", pv.NodeName, err)
+			ev.note(NoteOptional, "节点指标未取到（%s）: %s", pv.NodeName, ExplainError(err))
 		} else {
 			ev.NodeMetrics = nm
 		}
@@ -94,14 +96,14 @@ func collectPVCs(ctx context.Context, c *Collector, ev *Evidence, pv *PodView) {
 	for _, ref := range pvcRefs(pv.Volumes) {
 		pvc, err := c.PVC(ctx, pv.Namespace, ref.Name)
 		if err != nil {
-			ev.note(NoteRequired, "PVC %s 未取到: %v", ref.Name, err)
+			ev.note(NoteRequired, "PVC %s 未取到: %s", ref.Name, ExplainError(err))
 			continue
 		}
 		pvc.UsedByVolumes = ref.Volumes
 		// 子对象事件必须按 claim 自己的 uid 再取一次：服务端只按 involvedObject 过滤，
 		// Pod 的事件里不含 PVC 的进展（"waiting for first consumer"/"provisioning failed"）。
 		if events, err := c.Events(ctx, pv.Namespace, ref.Name, pvc.UID, 0, 0); err != nil {
-			pvc.EventsError = err.Error()
+			pvc.EventsError = ExplainError(err)
 		} else {
 			pvc.Events = events
 		}
@@ -160,6 +162,8 @@ func hasControllerOwner(pv *PodView) bool {
 }
 
 // note 追加一条降级说明（采集期的事实记录，不是错误），类别决定它算不算"证据缺失"。
+// 传错误时统一用 %s + ExplainError(err)：集群在采集过程中断开的话，notes 里也该是
+// "集群不可达"这个结论，而不是让模型自己去读 dial 文本（§17.1 的动机换成 Notes 通道同样成立）。
 func (ev *Evidence) note(kind NoteKind, format string, args ...any) {
 	ev.Notes = append(ev.Notes, NoteView{Kind: kind, Message: fmt.Sprintf(format, args...)})
 }

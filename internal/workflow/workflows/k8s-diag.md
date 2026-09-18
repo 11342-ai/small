@@ -1,6 +1,7 @@
 ---
 name: k8s-diag
 description: 诊断 K8s Pod 生命周期异常，产出带证据链与置信度的根因报告
+requires: k8s
 trigger: 用户报告 Pod 异常（一直重启 / 起不来 / OOMKilled / ImagePullBackOff / 一直 Pending / 探针失败）或要求诊断某个 Pod（含 /diag 命令显式进入）
 input: namespace/pod（命令形式 /diag <namespace>/<pod>）；可选：症状描述、时间范围
 output: 对话内 RCA 报告（根因 + 置信度 + 证据链 + 被否候选 + 缺失证据 + 建议）+ 落盘产物（evidence.json / report.json / report.md）
@@ -17,7 +18,7 @@ stop: k8s_report 提交并向用户汇报后，等待用户确认或追问即结
    - ContainerRestart（非 OOM）：restart_probe_kill（Liveness probe failed + will be restarted，lastState=Error 而应用日志正常；但探针配置能看出端口/路径/时序错的，用 probe_* 类）/ restart_app_crash（应用自崩，无探针事件）/ restart_unknown（有重启但日志、终态原因、事件都缺）
    - ProbeFailed：probe_path_wrong（探针 HTTP 404）/ probe_port_wrong（connection refused，探针端口≠监听端口；liveness 因此杀容器也用它）/ probe_timing_too_short（initialDelay/period 短于启动耗时：先失败后自愈；liveness 因此杀容器也用它）
    - 兜底 other：归不进以上任一类。选它必须写清"是什么 + 缺哪条证据"，否则等于把"没查出来"包装成结论。
-5. 按需深挖：证据不足时用原子工具补。按症状的必查项——CrashLoop：k8s_logs 带 previous=true 与 lastState 退出码（previous 可能已取不到，正文会写 "unable to retrieve container logs"，那时当前日志里就是崩溃前的输出），以及 env 引用的 configMap/secret 是否存在（CreateContainerConfigError 类启动失败）；OOM：k8s_metrics 看用量是否贴 limit + k8s_workload 看 limits 怎么配的；ImagePull：k8s_events 里的镜像名与错误码；Pending：k8s_events 的调度事件 + k8s_nodes 列全部节点（Pending 的 Pod 没有 node_name，k8s_node 取不到，必须走这条）核对 Pod spec 的调度约束（nodeSelector/tolerations/affinity，其中 affinity 的 required 是硬门槛）与节点标签/taint/余量，并用 pod 引用的 PVC 绑定状态；Probe：k8s_workload 的探针配置 + k8s_events 的 Unhealthy 事件。
+5. 按需深挖：证据不足时用原子工具补。按症状的必查项——CrashLoop：k8s_logs 带 previous=true 与 lastState 退出码（previous 可能已取不到，正文会写 "unable to retrieve container logs"，那时当前日志里就是崩溃前的输出），以及 env 引用的 configMap/secret 是否存在（CreateContainerConfigError 类启动失败）；OOM：k8s_metrics（集群没装 metrics-server 时该工具不会注册，那就跳过它，改用 k8s_evidence 返回里的用量字段）看用量是否贴 limit + k8s_workload 看 limits 怎么配的；ImagePull：k8s_events 里的镜像名与错误码；Pending：k8s_events 的调度事件 + k8s_nodes 列全部节点（Pending 的 Pod 没有 node_name，k8s_node 取不到，必须走这条）核对 Pod spec 的调度约束（nodeSelector/tolerations/affinity，其中 affinity 的 required 是硬门槛）与节点标签/taint/余量，并用 pod 引用的 PVC 绑定状态；Probe：k8s_workload 的探针配置 + k8s_events 的 Unhealthy 事件。
 6. 交叉验证：对每个候选根因同时找支持证据与反对证据，写明被否候选及否决理由；不允许把"没取到证据"当作"排除"。
 7. 置信度裁决：≥80% 需至少两条独立证据且含一条决定性证据（termination reason / event reason / 配置数值），且关键证据无缺失；关键证据缺失时上限 79% 并写进 missing_evidence；每条证据必须带来源（工具名 + 对象/字段/时间），不得出现"可能/也许"这类无支撑表述。提交时工具会校验"≥0.80 需至少两条独立来源的证据"，不满足会被打回——补证据或降档，别硬报。
 8. 提交与汇报：调 k8s_report 落盘（report.json + report.md），root_cause.category 必须取自参数说明里的词表（枚举），拿不准就用 other 并在 summary 里写清是什么、缺哪条证据；把渲染后的报告转给用户，声明 [分支完成:k8s-diag]，等待用户确认或追问（结束）。

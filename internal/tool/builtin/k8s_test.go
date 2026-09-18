@@ -3,6 +3,11 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -208,5 +213,44 @@ func TestK8sEvidenceArgsValidation(t *testing.T) {
 		if !res.IsError {
 			t.Errorf("args=%s 应回灌业务失败: %+v", args, res)
 		}
+	}
+}
+
+// TestK8sToolClusterDownText 运行期集群断开时，回灌给模型的必须是"集群不可达"这句结论，
+// 而不是让它自己从 "dial tcp ...: connection refused" 里猜（见 k8s-diagnosis.md §17）。
+// 构造方式：起一个 httptest server 再关掉 —— 地址确定、连接必被拒，不依赖固定端口占用。
+func TestK8sToolClusterDownText(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	deadURL := srv.URL
+	srv.Close()
+
+	path := filepath.Join(t.TempDir(), "kubeconfig")
+	cfg := fmt.Sprintf("apiVersion: v1\nkind: Config\ncurrent-context: down\n"+
+		"clusters:\n- name: c1\n  cluster:\n    server: %s\n"+
+		"contexts:\n- name: down\n  context:\n    cluster: c1\n    user: u1\n"+
+		"users:\n- name: u1\n  user:\n    token: dummy\n", deadURL)
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write kubeconfig: %v", err)
+	}
+	coll, err := k8s.New(k8s.Config{KubeConfig: path})
+	if err != nil {
+		t.Fatalf("k8s.New: %v", err)
+	}
+
+	res, err := K8sPod(coll).Execute(context.Background(), json.RawMessage(`{"namespace":"default","pod":"web-0"}`))
+	if err != nil {
+		t.Fatalf("集群不可达应是业务失败而非框架错误: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("应回灌业务失败: %+v", res)
+	}
+	t.Logf("回灌文案: %s", res.Data)
+	if !strings.Contains(res.Data, "集群不可达") {
+		t.Errorf("连接类失败应给结论文案，实际: %s", res.Data)
+	}
+	// 括号里的分类依据要留着（人机都靠它区分"被拒/超时/DNS"）；完整原文不再回灌——地址与端口
+	// 属于"连的是哪个集群"，由启动输出的 context 与证据包 target.context 交代（§17.2）。
+	if !strings.Contains(res.Data, "connection refused") {
+		t.Errorf("应保留分类依据，实际: %s", res.Data)
 	}
 }
