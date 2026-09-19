@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -65,6 +66,21 @@ type Config struct {
 	PreflightTimeout time.Duration
 }
 
+// sanitizeAPIServer 端点落产物与启动行之前的清洗：URL 里的 userinfo 是凭据（kubeconfig 的 server 允许
+// `user:pass@host` 这种写法），绝不能写进 report.json / report.md / 控制台。解析失败返回空——宁可产物里
+// 没有端点，也不冒把原文写进产物的风险；scheme/host/port/path 保留（网关场景下路径前缀有意义）。
+func sanitizeAPIServer(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	u.User = nil
+	return u.String()
+}
+
 // Collector 采集层模块对象：持有 typed clientset 与 metrics 客户端，方法按证据类别细分。
 type Collector struct {
 	cfg     Config
@@ -109,7 +125,8 @@ func New(cfg Config) (*Collector, error) {
 	}
 	coll := newWithClients(cfg, core, mc)
 	// 端点地址与 context 同处归一化：都进产物，回放时才能回答"这份证据来自哪个集群的哪个端点"。
-	coll.apiServer = rest.Host
+	// 清洗后再记：userinfo 是凭据，不能进产物（见 §17.6）。
+	coll.apiServer = sanitizeAPIServer(rest.Host)
 	return coll, nil
 }
 

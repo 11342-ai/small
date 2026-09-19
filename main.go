@@ -134,14 +134,17 @@ func main() {
 	// 集群不可达是环境问题，两者要用户做的事不同，不能共用一句"检查 kubeconfig"（§16.4）。
 	var k8sReason string
 	if err != nil {
-		fmt.Printf("告警: K8s 采集器未就绪（读取 kubeconfig 失败: %v），本次不注册 k8s_* 工具\n", err)
-		k8sReason = "读取 kubeconfig 失败（" + err.Error() + "）；检查 config.yml 的 kube_config（缺省 ~/.kube/config）后重启"
+		// 错误原文一律过脱敏：kubeconfig 的 server 可能带 userinfo，凭据不许出现在告警与命令文案里（§17.6）。
+		reason := k8s.RedactCredentials(err.Error())
+		fmt.Printf("告警: K8s 采集器未就绪（读取 kubeconfig 失败: %s），本次不注册 k8s_* 工具\n", reason)
+		k8sReason = "读取 kubeconfig 失败（" + reason + "）；检查 config.yml 的 kube_config（缺省 ~/.kube/config）后重启"
 		k8sColl = nil
 	} else if caps, perr := k8sColl.Preflight(context.Background()); perr != nil {
 		// 启动期探测（k8s-diagnosis.md §16）：把"注册了但用不了"变成"没注册"，
 		// 让注册表、提示词、真实可用性三者一致；失败沿用既有 nil 退化路径。
-		fmt.Printf("告警: K8s 采集器未就绪（%v），本次不注册 k8s_* 工具\n", perr)
-		k8sReason = "连接 apiserver 失败（" + perr.Error() + "）；确认集群可达（kubectl 能连上）后重启"
+		reason := k8s.RedactCredentials(perr.Error())
+		fmt.Printf("告警: K8s 采集器未就绪（%s），本次不注册 k8s_* 工具\n", reason)
+		k8sReason = "连接 apiserver 失败（" + reason + "）；确认集群可达（kubectl 能连上）后重启"
 		k8sColl = nil
 	} else {
 		// 成功也打一行：用户事前就能看到接入的是哪个端点、哪个版本、指标能力如何。

@@ -7,3 +7,7 @@
 
 # 场景评测产物（eval.sh 每跑一轮生成一个 run 目录，纯可重跑数据，不进版本库）
 /Zoo/k8s-lab/out/
+internal/ebpf_temp/Zoo/
+
+k8s.svg
+k8s_2.svg

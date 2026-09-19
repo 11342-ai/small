@@ -11,14 +11,30 @@ package k8s
 // （见 §17.3）。这样同一句短语可以同时进工具回灌与证据包 notes，不必为两个通道养两套文案。
 //
 // 边界：只认传输层（连不上 / 超时）。4xx 业务错误（pods not found、Forbidden）原样回灌——
-// 它们的原文已经说清了，再包一层反而丢掉细节。
+// 它们的原文已经说清了，再包一层反而丢掉细节。但"原样"不等于不脱敏：凡是要把错误原文带出去的场合
+// 都过 RedactCredentials——kubeconfig 的 server 允许 `user:pass@host` 写法，而 net/http 只把 password
+// 掩成 `***`，用户名会随错误原文露出来（见 Zoo/model/k8s-diagnosis.md §17.6）。
 
 import (
 	"context"
 	"errors"
 	"net"
+	"regexp"
 	"strings"
 )
+
+// credInURL 匹配 URL 里的 userinfo（`://user[:pass]@`）：只抹凭据，保留 scheme/host/port/path。
+// 只认 "scheme://" 形态，普通文本里的 @（如 `pods "web@0" not found`）不会被误伤。
+var credInURL = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.\-]*://)[^/@\s]*@`)
+
+// RedactCredentials 把文本里 URL 的 userinfo 抹成 `***`（`https://user:pass@h/x` → `https://***@h/x`）。
+// 用在所有会把错误原文带出去的地方：工具回灌、启动告警、`/diag` 拒绝文案。
+func RedactCredentials(s string) string {
+	if s == "" || !strings.Contains(s, "://") {
+		return s
+	}
+	return credInURL.ReplaceAllString(s, "${1}***@")
+}
 
 // connFailure 连接类失败的定性。connOK 表示"不属于这一类"，调用方按原始错误回灌。
 type connFailure int
@@ -84,11 +100,11 @@ func ExplainError(err error) string {
 	}
 	switch kind, reason := classifyConn(err); kind {
 	case connUnreachable:
-		return "集群不可达（" + reason + "）"
+		return "集群不可达（" + RedactCredentials(reason) + "）"
 	case connTimeout:
-		return "调用超时（" + reason + "）"
+		return "调用超时（" + RedactCredentials(reason) + "）"
 	default:
-		return err.Error()
+		return RedactCredentials(err.Error())
 	}
 }
 

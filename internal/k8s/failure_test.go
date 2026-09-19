@@ -78,6 +78,35 @@ func TestExplainError_Shape(t *testing.T) {
 	}
 }
 
+// TestRedactCredentials 凭据脱敏：URL 里的 userinfo 一律抹掉（net/http 只掩码 password，用户名会露出来），
+// 普通文本里的 @ 不许误伤。
+func TestRedactCredentials(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"无凭据的 URL 原样", `Get "https://10.0.0.1:6443/version": dial tcp`, `Get "https://10.0.0.1:6443/version": dial tcp`},
+		{"user:pass 抹成 ***", `Get "https://user:pass@api.internal:6443/version": EOF`, `Get "https://***@api.internal:6443/version": EOF`},
+		{"只有 user 也抹", `https://user@api.internal/x`, `https://***@api.internal/x`},
+		{"带路径的 URL", `https://u:p@gw.corp/k8s/prod/health`, `https://***@gw.corp/k8s/prod/health`},
+		{"非 URL 的 @ 不误伤", `pods "web@0" not found`, `pods "web@0" not found`},
+		{"空串", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RedactCredentials(tc.in); got != tc.want {
+				t.Errorf("RedactCredentials(%q) = %q，期望 %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestExplainError_RedactsCredentials 原文分支也要脱敏：错误文本里可能带回整个 URL（含 userinfo）。
+func TestExplainError_RedactsCredentials(t *testing.T) {
+	err := errors.New(`unexpected response from https://user:pass@api.internal:6443/health`)
+	got := ExplainError(err)
+	if strings.Contains(got, "user:pass") || !strings.Contains(got, "https://***@api.internal:6443") {
+		t.Errorf("原文分支未脱敏: %q", got)
+	}
+}
+
 // TestIsConnFailure 要不要补用户向建议：只有连接类为真；业务错误与 nil 为假
 // （否则"Pod 不存在"也会被建议去确认集群可达，给出走不通的下一步）。
 func TestIsConnFailure(t *testing.T) {

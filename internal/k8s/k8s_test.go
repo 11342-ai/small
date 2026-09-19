@@ -1316,6 +1316,27 @@ func TestCollect_ViewErrorFieldsConclusion(t *testing.T) {
 	}
 }
 
+// TestSanitizeAPIServer 端点落产物/启动行前要清洗：kubeconfig 的 server 允许 `user:pass@host`，
+// 那是凭据，绝不能进 report.json / report.md / 控制台；解析失败则不落（宁可没有端点）。
+func TestSanitizeAPIServer(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"普通地址原样", "https://10.0.0.1:6443", "https://10.0.0.1:6443"},
+		{"user:pass 去 userinfo", "https://user:pass@10.0.0.1:6443", "https://10.0.0.1:6443"},
+		{"只有 user 也去掉", "https://user@10.0.0.1:6443", "https://10.0.0.1:6443"},
+		{"路径前缀保留", "https://gw.corp/k8s/prod", "https://gw.corp/k8s/prod"},
+		{"IPv6 保留", "http://[::1]:8080", "http://[::1]:8080"},
+		{"空串", "", ""},
+		{"解析失败不落", "://bad", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizeAPIServer(tc.in); got != tc.want {
+				t.Errorf("sanitizeAPIServer(%q) = %q，期望 %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // noteWithPrefix 找第一条以 prefix 开头的降级说明（找不到返回空串）。
 func noteWithPrefix(notes []NoteView, prefix string) string {
 	for _, n := range notes {

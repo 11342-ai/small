@@ -376,7 +376,7 @@ Zoo/k8s-lab/
 18. 顺带修正（2026-09-18）：`New` 把"实际生效的 context"归一化进 `cfg.Context`（显式 `kube_context` 优先，否则 kubeconfig 的 `current-context`），使 evidence/report 的 `target.context` 在默认场景不再为空（§16.3）。
 19. 运行期连接类失败归因（2026-09-19）：`ExplainError` 把传输层错误翻成结论短语（`集群不可达（connection refused）`），4xx 业务错误原样回灌；作用面是工具回灌、证据包 notes（含 `pvc.events_error`）、视图错误字段（`allocation_error`/`sa_read_error`）与 `/diag` 拒绝文案（首版只堵了工具层与 3 处 notes，收口见 §17.6）。用户向建议只在连接类失败时由调用方补（`IsConnFailure`），模型向建议由 base 提示词交代一次。理由与收口过程见 §17。
 20. 失败语义靠 `Data` 文案自述（2026-09-19）：tool 消息在协议里只有 content 能承载信息（`provider.Message` 无 error 字段），所以"失败"必须写进回灌文本；`Result.IsError` 只服务展示层与轨迹，不进模型上下文——`cli.md` 原先"`Result{Data,IsError}` 回灌模型"的说法已按此改正。是否给所有工具加统一的失败文本标记，见 §15。
-21. 目标端点落盘（2026-09-19）：`Target` 增 `api_server`（值取 `New` 里的 `rest.Host`，与 context 同处归一化），证据包与报告都带、`report.md` 头部与 CLI 启动行展示，报告 JSON 契约变更故 `ReportSchemaVersion` 1 → 2。理由：原以为"地址由 context 交代"，但 context 只是名字，结果地址在所有产物里消失、与"降级必须可见"相拧（见 §17.6）。
+21. 目标端点落盘（2026-09-19）：`Target` 增 `api_server`（值取 `New` 里的 `rest.Host`，与 context 同处归一化），证据包与报告都带、`report.md` 头部与 CLI 启动行展示，报告 JSON 契约变更故 `ReportSchemaVersion` 1 → 2；落产物与错误文本都做凭据脱敏（去 URL userinfo / `://***@`，见 §17.6 第 4 条）。理由：原以为"地址由 context 交代"，但 context 只是名字，结果地址在所有产物里消失、与"降级必须可见"相拧（见 §17.6）。
 
 ## 15. 待决问题
 
@@ -613,13 +613,15 @@ connect: connection refused`——这句话里没有"集群没了"这个结论�
 
 工具回灌因此变短且无标点堆叠：`读取 Pod 失败: 集群不可达（connection refused）`；
 证据包 notes 同理：`事件未取到: 集群不可达（connection refused）`。
+文案里若带 URL（client-go 的错误原文），userinfo 已脱敏为 `***`，见 §17.6 第 4 条。
 
 ### 17.4 落地清单
 
-- `internal/k8s/failure.go`：`classifyConn` + `ExplainError`（结论短语）+ `IsConnFailure`（要不要补建议）。
+- `internal/k8s/failure.go`：`classifyConn` + `ExplainError`（结论短语）+ `IsConnFailure`（要不要补建议）
+  + `RedactCredentials`（文本级凭据脱敏，`ExplainError` 的原文分支也过它）。
 - `internal/k8s/evidence.go`：7 处 `Notes` 文案与 `pvc.events_error` 走 `ExplainError`；`Target` 填 `api_server`。
 - `internal/k8s/read.go`：`Node`/`Nodes` 两处 `allocation_error`、Pod 的 `sa_read_error` 走 `ExplainError`。
-- `internal/k8s/k8s.go`：`Collector` 记 `rest.Host`（`New` 里与 context 同处归一化），供产物与启动行使用。
+- `internal/k8s/k8s.go`：`Collector` 记 `rest.Host`（`New` 里与 context 同处归一化，落值前过 `sanitizeAPIServer` 去 userinfo），供产物与启动行使用。
 - `internal/k8s/view.go`：`Target` 增 `api_server`（`json:"api_server,omitempty"`）。
 - `internal/k8s/report.go`：`SaveReportView` 补 `target.api_server`；`report.md` 头部按需追加 `@ <api_server>`；
   `ReportSchemaVersion` 1 → 2（常量注释要求字段增减时递增）。
@@ -633,12 +635,16 @@ connect: connection refused`——这句话里没有"集群没了"这个结论�
 
 单测（`internal/k8s`）：
 
-- `failure_test.go`：判据（被拒 / 拨号超时 / ctx 超时 / DNS / 路由不可达）、短语形态、`IsConnFailure`。
+- `failure_test.go`：判据（被拒 / 拨号超时 / ctx 超时 / DNS / 路由不可达）、短语形态、`IsConnFailure`；
+  另加 `RedactCredentials` 的表驱动用例（`user:pass@`、只有 `user@`、无凭据、URL 夹在长文本中间、
+  非 URL 的 `a@b.com` 不许误伤），并断言 `ExplainError` 的原文分支已脱敏。
+- `k8s_test.go`：`sanitizeAPIServer` 用例（普通 URL 原样、`user:pass@` 去 userinfo、带 path 保留 path、解析失败返回空）。
 - `TestCollect_AllSourcesConnFail`：Pod 可取、其余来源（工作负载 / 事件 / 日志 / Pod 指标 / 节点 / 节点指标 / PVC）
   全部返回连接类错误 → 遍历所有 `notes` 与 `pvc.events_error`，断言都不含传输层原文（`dial tcp`）
   且都含结论短语。首版只有一条"仅事件失败"的用例，等于 1/7 覆盖却写着覆盖了 notes 通道，本次改成全来源。
-- `TestCollect_AllocationErrorConclusion`：节点可取、集群范围列 Pod 失败 → 断言 `node.allocation_error`
-  与 evidence 里"节点分配汇总失败"那条 note 都是归因文案（一个字段两个出口一起去）。
+- `TestCollect_ViewErrorFieldsConclusion`：节点可取、集群范围列 Pod 与 ServiceAccount 取不到 →
+  断言 `allocation_error` 的三个出口（`Node` 字段 / `Nodes` 字段 / evidence 的"节点分配汇总失败"note）
+  与 `sa_read_error` 都是归因文案且不含原文。
 
 单测（`internal/tool/builtin`）：`TestK8sToolClusterDownText`（关掉的 httptest 端点当死集群，
 断言回灌含"集群不可达"与分类依据 `connection refused`；fake 客户端不认拨号语义，与 §16.7 同一取舍）。
@@ -650,18 +656,16 @@ connect: connection refused`——这句话里没有"集群没了"这个结论�
 
 ### 17.6 收口：通道统一与端点落盘（2026-09-19 同日）
 
-首版交付有三个问题，本次一并收口：
+首版交付有三个问题，第 4 条是同一天复核输出面时追加的，本次一并收口：
 
 1. 通道只堵了一半，文档却按"全堵了"写。真实情况是 7 处 notes 只改了 3 处（工作负载 / 事件 / Pod 指标），日志、节点信息、节点指标、PVC 四处仍是原始错误；`allocation_error` 与 `sa_read_error` 两个视图字段完全没动，前者还会经"节点分配汇总失败"那条 note 二次进模型。后果是同一份 evidence.json 里既有 `事件未取到: 集群不可达（connection refused）`、又有 `日志未取到（容器 app…）: dial tcp …: connection refused`——正是 §17.1 要消灭的矛盾信号。现在按 §17.2 的清单统一。
 2. "地址由 context 交代"的技术依据不成立：context 只是 context 名，产物里没有服务端地址，等于地址在所有产物里消失。现在 `Target` 增 `api_server`（值取 `New` 里的 `rest.Host`，与 context 同处归一化，见 §16.3），证据包与报告都带，`report.md` 头部与 CLI 启动行也展示（`apiserver v1.37.0 @ https://…（context=…）`）；模型回灌继续保持短，不把地址塞回去。
 3. 测试用单点覆盖冒充统一覆盖：`TestCollect_NotesUseConnConclusion` 只让事件来源失败，所以那 4 处没改也能绿。改成 §17.5 的"全来源强断言"，并把 `allocation_error` 的两个出口一起纳入。
+4. 输出面的凭据脱敏（同日复核 `net/http.stripPassword` 后补）：`api_server` 落产物/启动行前去掉 URL 里的 userinfo（`url.Parse` + `u.User = nil`，解析失败则不落，schema/host/port/path 保留）；错误文本（工具回灌、启动告警、`/diag` 拒绝文案）过文本级脱敏 `RedactCredentials`，把 `://user[:pass]@` 抹成 `://***@`。依据是红线"机密绝不入库"——kubeconfig 的 `server` 允许 `user:pass@host` 写法，而 net/http 只把 password 掩成 `***`（[client.go 的 stripPassword]），用户名会随错误原文露出来；这是本次新加 `api_server` 之后才出现的暴露面，顺手一起封掉。
 
 契约变化：报告 JSON 增字段 → `ReportSchemaVersion` 由 1 递增到 2（常量注释要求"字段增减时递增"）；证据包无版本字段，按增字段处理；`cmd/k8seval` 读的是 `expect.json` 的 target，不受影响。
 
-两条教训（写在这里，供下轮复查）：
-
-- 文档里"N 处 / N 个来源"这类可核对的数字，必须在改完之后按代码复核一遍再写定。本次 overclaim 有三处（§17.2 / §17.4 / §17.5），根因是"先按计划写文档、再改代码"时把计划当成了结果。
-- 编辑成功回执不等于落盘：本轮与上一轮各出现过一次外部工具（编辑器保存）回退掉已应用编辑的情况（上次是 `k8s.go` 的 import/常量/超时归一化，本次是 4 处 note）。所以"改完复读代码 + 有测试覆盖"是硬要求——本轮正是靠全来源断言才把这类回退暴露出来。
+一条做事要求（供下轮复查）：文档里"N 处 / N 个来源"这类可核对的数字，必须在改完之后按代码复核一遍再写定；同时"改完复读代码 + 有测试覆盖"是硬要求。本次 overclaim 有三处（§17.2 / §17.4 / §17.5），根因是"先按计划写文档、再改代码"把计划当成了结果，而当时只有单点覆盖的测试——4 处编辑没落到磁盘，它照样是绿的。
 
 
 ## 实现时踩坑
