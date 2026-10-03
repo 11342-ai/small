@@ -7,3 +7,13 @@
 
 # 场景评测产物（eval.sh 每跑一轮生成一个 run 目录，纯可重跑数据，不进版本库）
 /Zoo/k8s-lab/out/
+internal/ebpf_temp/Zoo/
+
+# eBPF 模块的构建/生成产物：不入库，获取与重新生成方式见模块文档
+internal/ebpf/C/vmlinux.h
+internal/ebpf/C/*.o
+internal/ebpf/ebpf
+
+# k8s 概念图（本地参考用）
+k8s.svg
+k8s_2.svg
