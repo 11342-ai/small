@@ -19,10 +19,11 @@ import (
 // 参数与裁剪默认值在方法内收敛，工具壳只负责解码参数后转调这里。
 
 // LogQuery 日志读取参数（零值即默认：尾部 200 行、64KB、当前容器的日志）。
+// TailLines 与 LimitBytes 都用 int64：与 PodLogOptions 的字段同型，省掉调用点来回转换。
 type LogQuery struct {
 	Container  string
 	Previous   bool
-	TailLines  int
+	TailLines  int64
 	LimitBytes int64
 }
 
@@ -40,7 +41,8 @@ func (c *Collector) Pod(ctx context.Context, ns, name string) (*PodView, error) 
 	if p.Spec.ServiceAccountName != "" {
 		sa, err := c.core.CoreV1().ServiceAccounts(ns).Get(ctx, p.Spec.ServiceAccountName, metav1.GetOptions{})
 		if err != nil {
-			v.ServiceAccountReadError = err.Error()
+			// 原因过 ExplainError：集群不可达这类传输层失败要给结论，别把 dial 原文留给模型（§17.2）。
+			v.ServiceAccountReadError = ExplainError(err)
 		} else {
 			for _, s := range sa.ImagePullSecrets {
 				v.ServiceAccountPullSecrets = append(v.ServiceAccountPullSecrets, s.Name)
@@ -189,8 +191,8 @@ func (c *Collector) Logs(ctx context.Context, ns, pod string, q LogQuery) (*LogV
 		limitBytes = defaultLogLimitBytes
 	}
 	opts := &corev1.PodLogOptions{Container: q.Container, Previous: q.Previous}
-	tailLines := int64(q.TailLines)
-	opts.TailLines = &tailLines
+	// q 是入参副本，取其字段地址安全（TailLines 与 API 字段同为 int64，无需转换）。
+	opts.TailLines = &q.TailLines
 	// 日志读用自己的预算（比元数据调用宽）：流式大对象与"取一个对象"不是一个量级，
 	// 共用一个预算会把慢读判成读失败并记 required_failed，等于把环境慢当成证据缺。
 	ctx, cancel := c.callCtxFor(ctx, logCallTimeout)
@@ -346,7 +348,8 @@ func (c *Collector) Node(ctx context.Context, name string) (*NodeView, error) {
 	// 失败只降级（节点自身摘要仍有用），原因写进视图字段——空值不能被当成"没有占用"。
 	pods, reqs, lims, err := c.nodeAllocation(ctx, name)
 	if err != nil {
-		v.AllocationError = err.Error()
+		// 过 ExplainError：该字段既进 k8s_node/k8s_nodes 的输出，也进证据包的降级说明（§17.2）。
+		v.AllocationError = ExplainError(err)
 		return v, nil
 	}
 	applyLedger(v, n.Status.Allocatable, pods, reqs, lims)
@@ -372,7 +375,7 @@ func (c *Collector) Nodes(ctx context.Context) ([]NodeView, error) {
 	if err != nil {
 		// 账本失败只降级：标签/taints/allocatable 仍是 Pending 归因要用的证据，余量不可信而已。
 		for i := range views {
-			views[i].AllocationError = err.Error()
+			views[i].AllocationError = ExplainError(err)
 		}
 		return views, nil
 	}
@@ -952,12 +955,4 @@ func countLines(s string) int {
 		n++
 	}
 	return n
-}
-
-// fmtTime 格式化时间（零值返回空串）。
-func fmtTime(t time.Time) string {
-	if t.IsZero() {
-		return ""
-	}
-	return t.Format(time.RFC3339)
 }

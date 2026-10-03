@@ -1146,3 +1146,203 @@ func TestReadOnlyGuard(t *testing.T) {
 		t.Errorf("没记录到 pods/log 的读——日志分支没走到")
 	}
 }
+
+// TestCollect_AllSourcesConnFail 集群在采集过程中断开：所有来源的降级说明都要给结论短语，
+// 不能有任何一条把传输层原文直接塞给模型——同一份 evidence.json 里两种口径并存就是矛盾信号（§17.1/§17.6）。
+// 首版只有一条"仅事件失败"的用例，等于 1/7 覆盖却写着覆盖了 notes 通道，这里补成全来源。
+func TestCollect_AllSourcesConnFail(t *testing.T) {
+	connErr := errors.New("dial tcp 10.0.0.1:6443: connect: connection refused")
+	const want = "集群不可达（connection refused）"
+
+	// 带 PVC 卷的 Pod：把 collectPVCs 那条路径也拉进来。
+	pod := oomPod()
+	pod.Spec.Volumes = []corev1.Volume{{
+		Name: "data",
+		VolumeSource: corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "claim-a"},
+		},
+	}}
+
+	cs := corefake.NewSimpleClientset(pod) // Pod 本体能取到，其余来源全断
+	for _, r := range []struct{ verb, res string }{
+		{"get", "replicasets"}, {"list", "events"}, {"get", "nodes"},
+		{"get", "persistentvolumeclaims"}, {"list", "pods"},
+	} {
+		cs.PrependReactor(r.verb, r.res, func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, connErr
+		})
+	}
+	// 容器日志走 pods/log 子资源：只拦 subresource=log，别把 Pod 的 get 一起拦掉。
+	// 注意 fake 的 GetLogs 发的是 GenericActionImpl（不是 GetAction），只能按 GetSubresource 判定。
+	cs.PrependReactor("get", "pods", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		if a.GetSubresource() == "log" {
+			return true, nil, connErr
+		}
+		return false, nil, nil
+	})
+	mc := metricsfake.NewSimpleClientset()
+	for _, res := range []string{"pods", "nodes"} {
+		mc.PrependReactor("get", res, func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, connErr
+		})
+	}
+	c := newWithClients(Config{Context: "mk"}, cs, mc)
+
+	ev, err := c.Collect(context.Background(), "default", "web-0")
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	// 每条错误来源的 note 都要给结论短语（"无可用日志"那条是 no_data，不含错误，不在其列）。
+	for _, prefix := range []string{
+		"工作负载规格未取到: ",
+		"事件未取到: ",
+		"日志未取到（容器 app",
+		"Pod 指标未取到: ",
+		"节点信息未取到（minikube）: ",
+		"节点指标未取到（minikube）: ",
+		"PVC claim-a 未取到: ",
+	} {
+		msg := noteWithPrefix(ev.Notes, prefix)
+		if msg == "" {
+			t.Errorf("缺降级说明 %q: %+v", prefix, ev.Notes)
+			continue
+		}
+		if !strings.Contains(msg, want) {
+			t.Errorf("note 应给结论短语: %q", msg)
+		}
+	}
+	// 兜底：任何一条 note 都不许出现传输层原文。
+	for _, n := range ev.Notes {
+		if strings.Contains(n.Message, "dial tcp") {
+			t.Errorf("note 不该带传输层原文: kind=%s msg=%q", n.Kind, n.Message)
+		}
+	}
+
+	// claim 本体育不到时该 PVC 整条不进视图（只有那条 note），events_error 是"本体取到了、事件没取到"的出口，
+	// 由下一条用例覆盖。
+	if len(ev.PVCs) != 0 {
+		t.Errorf("claim 本体育不到时不该产出 PVC 条目: %+v", ev.PVCs)
+	}
+}
+
+// TestCollect_PVCEventsErrorConclusion PVC 本体育得到、但它的事件列表失败：events_error 也要给结论短语。
+// 这个字段与 notes 是两条不同的出口（前者挂在 PVCView 上，随 k8s_evidence 的 JSON 一起回灌）。
+func TestCollect_PVCEventsErrorConclusion(t *testing.T) {
+	connErr := errors.New("dial tcp 10.0.0.1:6443: connect: connection refused")
+	const want = "集群不可达（connection refused）"
+
+	pod := oomPod()
+	pod.Spec.Volumes = []corev1.Volume{{
+		Name: "data",
+		VolumeSource: corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "claim-a"},
+		},
+	}}
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "claim-a", Namespace: "default", UID: "uid-pvc"},
+		Status:     corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound},
+	}
+	cs := corefake.NewSimpleClientset(pod, pvc)
+	cs.PrependReactor("list", "events", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, connErr
+	})
+	c := newWithClients(Config{Context: "mk"}, cs, metricsfake.NewSimpleClientset())
+
+	ev, err := c.Collect(context.Background(), "default", "web-0")
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if len(ev.PVCs) != 1 {
+		t.Fatalf("应采到 1 个 PVC: %+v", ev.PVCs)
+	}
+	if !strings.Contains(ev.PVCs[0].EventsError, want) || strings.Contains(ev.PVCs[0].EventsError, "dial tcp") {
+		t.Errorf("pvc.events_error = %q，期望结论短语且无原文", ev.PVCs[0].EventsError)
+	}
+}
+
+// TestCollect_ViewErrorFieldsConclusion 视图里的错误字段也是模型可见通道，同样要结论短语：
+// allocation_error 进 k8s_node/k8s_nodes 的输出、还会经 evidence 的 note 二次进模型；sa_read_error 进 k8s_pod 的输出（§17.2）。
+func TestCollect_ViewErrorFieldsConclusion(t *testing.T) {
+	connErr := errors.New("dial tcp 10.0.0.1:6443: connect: connection refused")
+	const want = "集群不可达（connection refused）"
+
+	pod := oomPod()
+	pod.Spec.ServiceAccountName = "app-sa"
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "minikube"}}
+
+	cs := corefake.NewSimpleClientset(pod, node)
+	cs.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, connErr // 节点账本要集群范围列 Pod
+	})
+	cs.PrependReactor("get", "serviceaccounts", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, connErr
+	})
+	c := newWithClients(Config{Context: "mk"}, cs, metricsfake.NewSimpleClientset())
+
+	ev, err := c.Collect(context.Background(), "default", "web-0")
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	// sa_read_error：k8s_pod / k8s_evidence 的 Pod 视图字段。
+	if got := ev.Pod.ServiceAccountReadError; !strings.Contains(got, want) || strings.Contains(got, "dial tcp") {
+		t.Errorf("sa_read_error = %q，期望结论短语且无原文", got)
+	}
+	// allocation_error 出口一：节点视图字段（Collect 里的节点摘要）。
+	if ev.Node == nil {
+		t.Fatal("节点应取到（只有账本失败）")
+	}
+	if got := ev.Node.AllocationError; !strings.Contains(got, want) || strings.Contains(got, "dial tcp") {
+		t.Errorf("node.allocation_error = %q，期望结论短语且无原文", got)
+	}
+	// allocation_error 出口二：Nodes() 里同一字段的另一处赋值（k8s_nodes 通道）。
+	views, err := c.Nodes(context.Background())
+	if err != nil {
+		t.Fatalf("Nodes: %v", err)
+	}
+	if len(views) != 1 {
+		t.Fatalf("应有 1 个节点: %+v", views)
+	}
+	if got := views[0].AllocationError; !strings.Contains(got, want) || strings.Contains(got, "dial tcp") {
+		t.Errorf("nodes[0].allocation_error = %q，期望结论短语且无原文", got)
+	}
+	// allocation_error 出口三：evidence 的降级说明。
+	msg := noteWithPrefix(ev.Notes, "节点分配汇总失败（minikube）: ")
+	if msg == "" {
+		t.Fatalf("缺节点分配汇总失败的降级说明: %+v", ev.Notes)
+	}
+	if !strings.Contains(msg, want) {
+		t.Errorf("note 应给结论短语: %q", msg)
+	}
+}
+
+// TestSanitizeAPIServer 端点落产物/启动行前要清洗：kubeconfig 的 server 允许 `user:pass@host`，
+// 那是凭据，绝不能进 report.json / report.md / 控制台；解析失败则不落（宁可没有端点）。
+func TestSanitizeAPIServer(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"普通地址原样", "https://10.0.0.1:6443", "https://10.0.0.1:6443"},
+		{"user:pass 去 userinfo", "https://user:pass@10.0.0.1:6443", "https://10.0.0.1:6443"},
+		{"只有 user 也去掉", "https://user@10.0.0.1:6443", "https://10.0.0.1:6443"},
+		{"路径前缀保留", "https://gw.corp/k8s/prod", "https://gw.corp/k8s/prod"},
+		{"IPv6 保留", "http://[::1]:8080", "http://[::1]:8080"},
+		{"空串", "", ""},
+		{"解析失败不落", "://bad", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizeAPIServer(tc.in); got != tc.want {
+				t.Errorf("sanitizeAPIServer(%q) = %q，期望 %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// noteWithPrefix 找第一条以 prefix 开头的降级说明（找不到返回空串）。
+func noteWithPrefix(notes []NoteView, prefix string) string {
+	for _, n := range notes {
+		if strings.HasPrefix(n.Message, prefix) {
+			return n.Message
+		}
+	}
+	return ""
+}

@@ -118,7 +118,7 @@ func runK8sWorkload(ctx context.Context, coll *k8s.Collector, args json.RawMessa
 	}
 	w, err := coll.WorkloadOf(ctx, in.Namespace, in.Pod)
 	if err != nil {
-		return k8sFail("读取工作负载失败: " + err.Error())
+		return k8sFail("读取工作负载失败: " + k8s.ExplainError(err))
 	}
 	return k8sJSON(w)
 }
@@ -157,7 +157,7 @@ func runK8sPod(ctx context.Context, coll *k8s.Collector, args json.RawMessage) (
 	}
 	pv, err := coll.Pod(ctx, in.Namespace, in.Pod)
 	if err != nil {
-		return k8sFail("读取 Pod 失败: " + err.Error())
+		return k8sFail("读取 Pod 失败: " + k8s.ExplainError(err))
 	}
 	return k8sJSON(pv)
 }
@@ -225,12 +225,12 @@ func runK8sEvents(ctx context.Context, coll *k8s.Collector, args json.RawMessage
 	}
 	pv, err := coll.Pod(ctx, in.Namespace, in.Pod)
 	if err != nil {
-		return k8sFail("读取 Pod 失败（事件按它的 uid 过滤）: " + err.Error())
+		return k8sFail("读取 Pod 失败（事件按它的 uid 过滤）: " + k8s.ExplainError(err))
 	}
 	events, err := coll.Events(ctx, in.Namespace, in.Pod, pv.UID,
 		time.Duration(in.SinceSeconds)*time.Second, in.Limit)
 	if err != nil {
-		return k8sFail("读取事件失败: " + err.Error())
+		return k8sFail("读取事件失败: " + k8s.ExplainError(err))
 	}
 	return k8sJSON(events)
 }
@@ -272,7 +272,7 @@ type logArgs struct {
 	Pod        string `json:"pod"`
 	Container  string `json:"container"`
 	Previous   bool   `json:"previous"`
-	TailLines  int    `json:"tail_lines"`
+	TailLines  int64  `json:"tail_lines"`
 	LimitBytes int64  `json:"limit_bytes"`
 }
 
@@ -307,7 +307,7 @@ func runK8sLogs(ctx context.Context, coll *k8s.Collector, args json.RawMessage) 
 		// 保证“该采哪个容器”只有一处实现（Collect 里也走 LogTargets）。
 		pv, err := coll.Pod(ctx, in.Namespace, in.Pod)
 		if err != nil {
-			return k8sFail("读取 Pod 失败（container 缺省时要靠它选容器）: " + err.Error())
+			return k8sFail("读取 Pod 失败（container 缺省时要靠它选容器）: " + k8s.ExplainError(err))
 		}
 		targets := k8s.LogTargets(pv)
 		if len(targets) == 0 {
@@ -322,7 +322,7 @@ func runK8sLogs(ctx context.Context, coll *k8s.Collector, args json.RawMessage) 
 		LimitBytes: in.LimitBytes,
 	})
 	if err != nil {
-		return k8sFail("读取日志失败: " + err.Error())
+		return k8sFail("读取日志失败: " + k8s.ExplainError(err))
 	}
 	return k8sJSON(lv)
 }
@@ -361,7 +361,7 @@ func runK8sMetrics(ctx context.Context, coll *k8s.Collector, args json.RawMessag
 	}
 	m, err := coll.PodMetrics(ctx, in.Namespace, in.Pod)
 	if err != nil {
-		return k8sFail("读取指标失败: " + err.Error())
+		return k8sFail("读取指标失败: " + k8s.ExplainError(err))
 	}
 	if in.Container != "" {
 		kept := make([]k8s.ContainerMetricsView, 0, 1)
@@ -429,7 +429,7 @@ func runK8sNode(ctx context.Context, coll *k8s.Collector, args json.RawMessage) 
 	}
 	nv, err := coll.Node(ctx, in.Node)
 	if err != nil {
-		return k8sFail("读取节点失败: " + err.Error())
+		return k8sFail("读取节点失败: " + k8s.ExplainError(err))
 	}
 	// 分配汇总失败不报错：节点自身摘要仍有用，原因已在视图的 allocation_error 字段里说明
 	// （与 Collect 的降级口径一致）。
@@ -467,7 +467,7 @@ func K8sNodes(coll *k8s.Collector) tool.Tool {
 func runK8sNodes(ctx context.Context, coll *k8s.Collector, _ json.RawMessage) (tool.Result, error) {
 	views, err := coll.Nodes(ctx)
 	if err != nil {
-		return k8sFail("读取节点列表失败: " + err.Error())
+		return k8sFail("读取节点列表失败: " + k8s.ExplainError(err))
 	}
 	return k8sJSON(views)
 }
@@ -507,7 +507,7 @@ func runK8sEvidence(ctx context.Context, coll *k8s.Collector, args json.RawMessa
 	}
 	ev, err := coll.Collect(ctx, in.Namespace, in.Pod)
 	if err != nil {
-		return k8sFail("收集证据失败: " + err.Error())
+		return k8sFail("收集证据失败: " + k8s.ExplainError(err))
 	}
 	// 先落盘再回灌：模型拿到的是完整证据，文件用于回放与人工核对（路径由命名约定确定）。
 	if _, err := coll.Save(ev); err != nil {

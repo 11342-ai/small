@@ -275,7 +275,7 @@ k8s_dir: ~/.small/k8s           # 诊断产物根（证据包 + 报告）
 
 证据包预算没进 config.yml：它是采集包内置默认值 `DefaultEvidenceMaxToken = 8192`（`k8s.Config.EvidenceMaxTokens` 可覆盖，但组合根暂不暴露配置键）——与 §15 里"8k 是否合适"待实测一并决定要不要提到配置层。
 
-组合根改动：`config.Load` 增字段 → `k8s.New(cfg)` 建采集包 → `builtin.Deps` 增 `K8s` 字段 → main.go 补 base 提示词的 k8s 工具说明句（workflow 分支清单由 `RenderBranch` 自动带出，不用手拼）；采集器构造失败只告警退化（`k8s_*` 工具不注册），不阻塞普通对话。`/diag <ns>/<pod>` 命令加在 `main_commands.go`，先做一次目标可达性预检再走 `errInject` 注入诊断请求。
+组合根改动：`config.Load` 增字段 → `k8s.New(cfg)` 建采集包 → `builtin.Deps` 增 `K8s` 字段 → main.go 补 base 提示词的 k8s 工具说明句（workflow 分支清单由 `RenderBranch` 自动带出，不用手拼）；采集器构造失败只告警退化（`k8s_*` 工具不注册），不阻塞普通对话。`/diag <ns>/<pod>` 命令加在 `main_commands.go`，先做一次目标可达性预检再走 `errInject` 注入诊断请求。构造之后还要做一次启动期能力探测（`Preflight`：判集群可达 + 探可选能力，并按能力裁剪工具与提示词/分支清单），见 §16。
 
 多集群：`kube_config`（换 kubeconfig 文件）+ `kube_context`（选 context）已落地，两者都是启动期装配，走采集包的 `Config.Context` → clientcmd overrides，并记进 evidence/report 的 `target.context`（回放时能分辨这份证据来自哪个集群）。仍未做的是"按命令临时切集群"（`/diag --context`）——那要求按 context 现建 `Collector`，属装配层改动，见 §15。
 
@@ -312,7 +312,7 @@ Zoo/k8s-lab/
 
 二、端到端（需 DEEPSEEK_API_KEY）：跑 /diag 后读 `report.json`，与 `expect.json` 比对——症状识别（0.15）、根因类别（0.35）、证据覆盖（0.25）、缺失声明（0.15）、置信度档位（0.10），命中 `must_not_claim` 则本场景 0 分（一票否决）。缺失声明只看漏报：基准是证据包 notes 里 kind=`required_failed` 的项（见 §4.1），必需源失败而报告没申报才按比例扣分；`optional_unavailable` 与"工具集之外的缺口"（容器内监听端口、ResourceQuota 明细等）申报与否都不扣分，超出基准时只在 score.json 的 notes 里提示人工复核（2026-09-15 两轮端到端实测后定，理由见 jjj §33——扣多报等于训练"少说话"，与降级可见原则相悖）。打分器是 `cmd/k8seval`（读产物 JSON，不依赖 internal），输出 `Zoo/k8s-lab/out/<run-id>/` 下的 score.json 与汇总表。本批只出分不设阈值，等基线稳定再定回归门槛。口径细则见 jjj §21.5。
 
-常规合并门槛不变：`go test -race ./...`、`go vet`、`gofmt` 全绿（k8slab 测试不在其中）。
+常规合并门槛不变：`go test -race ./...`、`go vet`、`gofmt` 全绿（k8slab 测试不在其中）。启动期探测（preflight）与能力裁剪的测试、手工冒烟另见 §16.7。
 
 ### 11.1 冒烟台（2026-09-10 已落地）
 
@@ -369,6 +369,14 @@ Zoo/k8s-lab/
 11. 接缝按 kb/memory 先例，builtin 直接持有 `*k8s.Collector`，不造接口。
 12. 报告用 `k8s_report` 工具提交结构化 JSON（避免解析自由文本），md 由 Go 渲染。
 13. client-go 与 `k8s.io/metrics` 取 v0.37.0（与集群小版本对齐），落地后集群为 v1.37.0，同版本号无需降级。
+14. 启动期加一次轻量 preflight（2026-09-18）：`ServerVersion` 失败 = fail-closed（不注册全部工具），可选能力明确缺失 = 只裁对应工具，探测本身无法判定 = fail-open（保留工具，输出注明"未探测到"）。超时缺省 2s（`k8s.Config.PreflightTimeout` 可覆盖，不进 config.yml）。理由见 §16.2。
+15. 探测落点在组合根显式调用 `coll.Preflight(ctx)`，`k8s.New` 保持纯装配（无网络 IO）。理由：`New` 的语义边界不变，探测可单独测（§16.4）。
+16. 能力裁剪只作用于 `k8s_metrics` 这一个工具；`k8s_evidence` 里的指标字段仍走 `optional_unavailable` 降级（不改 Collect）。理由：指标只在这两处出现，后者不是独立工具，裁注册解决不了它（§16.5）。
+17. 工作流分支清单按能力裁剪：frontmatter 增 `requires`，`k8s-diag` 标 `requires: k8s`，新增 `RenderBranchFor`。理由：工具不注册时分支仍被注入，模型会进一个没有工具的分支（§16.1）。
+18. 顺带修正（2026-09-18）：`New` 把"实际生效的 context"归一化进 `cfg.Context`（显式 `kube_context` 优先，否则 kubeconfig 的 `current-context`），使 evidence/report 的 `target.context` 在默认场景不再为空（§16.3）。
+19. 运行期连接类失败归因（2026-09-19）：`ExplainError` 把传输层错误翻成结论短语（`集群不可达（connection refused）`），4xx 业务错误原样回灌；作用面是工具回灌、证据包 notes（含 `pvc.events_error`）、视图错误字段（`allocation_error`/`sa_read_error`）与 `/diag` 拒绝文案（首版只堵了工具层与 3 处 notes，收口见 §17.6）。用户向建议只在连接类失败时由调用方补（`IsConnFailure`），模型向建议由 base 提示词交代一次。理由与收口过程见 §17。
+20. 失败语义靠 `Data` 文案自述（2026-09-19）：tool 消息在协议里只有 content 能承载信息（`provider.Message` 无 error 字段），所以"失败"必须写进回灌文本；`Result.IsError` 只服务展示层与轨迹，不进模型上下文——`cli.md` 原先"`Result{Data,IsError}` 回灌模型"的说法已按此改正。是否给所有工具加统一的失败文本标记，见 §15。
+21. 目标端点落盘（2026-09-19）：`Target` 增 `api_server`（值取 `New` 里的 `rest.Host`，与 context 同处归一化），证据包与报告都带、`report.md` 头部与 CLI 启动行展示，报告 JSON 契约变更故 `ReportSchemaVersion` 1 → 2；落产物与错误文本都做凭据脱敏（去 URL userinfo / `://***@`，见 §17.6 第 4 条）。理由：原以为"地址由 context 交代"，但 context 只是名字，结果地址在所有产物里消失、与"降级必须可见"相拧（见 §17.6）。
 
 ## 15. 待决问题
 
@@ -384,6 +392,280 @@ Zoo/k8s-lab/
 - 日志流的超时：已于 2026-09-15 拆出独立预算（元数据 30s / 日志 90s，见 §4.4），解决"慢读被判成缺失证据"。仍未做的是真正的空闲超时——读出第一字节后若持续有数据就一直等、卡住才掐（对齐 provider 那条经验）；要做需要在流上包一层按读重置的定时器，代价比现在这个常量大一截，等真遇到"日志流卡住"再说。
 - `List` 一律不带 `Limit`/分页，且节点账本要跨命名空间 `Pods("").List`：大集群（几千 Pod）下内存与耗时都不封顶。要不要加 Limit 或改分页。
 - `Collect` 没有整体 deadline（每个来源各自 ≤30s，日志那条 ≤90s，PVC 随卷引用线性增加调用数）：要不要给整包一个总预算。
+
+2026-09-18 新增待决（preflight 相关，见 §16）：
+
+- 是否用 `SelfSubjectAccessReview` 把 RBAC 403 提前到启动期（本次未做，理由见 §16.6）。
+- 是否做"重新探测/热恢复"：集群后起时不必重启 small。要做得让注册表可变、提示词重算，见 §16.6。
+- preflight 是否要同时探其他可选能力（本期只探 `metrics.k8s.io`，扩展位就是 §16.3 的探测序列）。
+- 连接类失败已归因（§17）；401/403 这类鉴权错误仍按原文回灌，是否也归成"权限不足"结论句待定。
+- 是否给所有工具加统一的失败文本标记（如 `Data` 前置一个标签）：现在失败语义靠文案自述，模型得读文案判断（见 §14 决策 20）；加标记会改动所有工具的输出与提示词，属框架级改动，等出现真实误判案例再说。
+- GUI 是否展示当前接入端点与能力（本次只在 CLI 启动行与 `report.md` 里展示 `api_server`，GUI 仍只有对话流）。
+
+## 16. 启动期 preflight 与能力裁剪（2026-09-18）
+
+### 16.1 问题
+
+`k8s.New` 只读 kubeconfig 与拼 `rest.Config`，不拨号、不鉴权；它的失败面只有"文件层"（文件不存在 / 格式错 / context 名不存在）。凡"文件对但集群不可用"的情形——apiserver 没起、网络不通、token 失效、RBAC 不足、metrics-server 缺失——一律穿透到第一次工具调用才暴露。
+
+后果是三处不一致：注册表里有 9 个 `k8s_*` 工具、提示词里列着它们、真实可用性却可能是零。两个区间：
+
+- 组合根只把 `New` 失败当作"未接入"（main.go 的 nil 退化路径）。`minikube stop` 之后 `New` 依然成功，于是工具照注册、提示词照列，模型一调才拿到业务失败。
+- 工具清单提示词已经是条件拼接（`k8sColl != nil` 才追加），但工作流分支清单是无条件注入的：工具不注册时 `k8s-diag` 分支仍会出现在提示词里，模型可能进入一个没有任何工具的 k8s 分支。
+
+对模型侧这不是灾难——业务失败 + notes 降级口径是既有设计，降级可见；对用户侧则是"事前无法判断能不能用"。本次补的就是这一段：把"能不能用"从运行期的意外变成启动期的已知项。
+
+### 16.2 目标与取舍
+
+三件事：启动期一次轻量探测；按能力裁剪工具注册与两处提示词；把探测结果明确告知用户并区分原因。
+
+分档原则（核心取舍）：
+
+- 集群不可达 / 鉴权失败（`ServerVersion` 失败）→ fail-closed：不注册全部 `k8s_*` 工具，退回既有 nil 退化路径。
+- 可选能力明确缺失（如 `metrics.k8s.io` 组不存在）→ 只裁对应工具，其余照常。
+- 探测本身无法判定（超时、非 404 的报错、权限不足）→ fail-open：保留工具，输出里注明"未探测到"，把失败留给调用期降级。宁可"注册了偶尔失败"，也不要"因为探测不准而裁掉本来可用的能力"。
+
+时效性边界（必须写清）：preflight 只回答"启动这一刻能不能用"。启动后集群挂掉仍会"注册着但调用失败"——调用期降级仍是兜底；本次不引入后台巡检，也不做热恢复（见 §16.6）。
+
+### 16.3 探测契约（internal/k8s）
+
+超时：`defaultPreflightTimeout = 2 * time.Second`；`Config.PreflightTimeout` 可覆盖（<=0 用缺省），但组合根不暴露 config.yml 键——探测是启动期一次性的，不值得多一个配置面；留这个字段是为了让单测能把超时压到几十毫秒。一次 `Preflight` 的所有请求共享同一个 2s 预算（不是每个请求各 2s）。
+
+结果类型：
+
+```go
+// Availability 能力可用性三态：未知不等于不可用（未知按可用处理，见 §16.2 的分档）。
+type Availability int
+
+const (
+	CapUnknown     Availability = iota // 未探测到（探测本身报错）：按可用处理
+	CapAvailable                       // 明确可用
+	CapUnavailable                     // 明确不可用（组不存在）
+)
+
+// Capabilities 启动期探测结果：给组合根做用户可见输出，也给注册层/提示词层做裁剪。
+type Capabilities struct {
+	Context       string       // 实际生效的 kube context（见本节末的归一化）
+	ServerVersion string       // apiserver 版本（仅用于告知用户）
+	Metrics       Availability // metrics.k8s.io 的可用性
+}
+```
+
+探测方法（组合根显式调用一次，`New` 保持纯装配）：
+
+```go
+// Preflight 启动期探测：判集群可达 + 探可选能力；结果同时记录在 Collector 上（注册层/提示词层读它）。
+// error 只表示"集群不可达 / 鉴权失败"这类致命情形；可选能力缺失不算 error，进 Capabilities 交给调用方裁剪。
+func (c *Collector) Preflight(ctx context.Context) (*Capabilities, error)
+```
+
+探测顺序与判据（都用 `c.core.Discovery()`，共享 2s 预算）：
+
+1. `ServerVersion()`：失败即 return error（fail-closed）；成功取版本串。
+2. `ServerResourcesForGroupVersion("metrics.k8s.io/v1beta1")`：无错 → `CapAvailable`；`IsNotFound` → `CapUnavailable`（明确缺失，裁掉 `k8s_metrics`）；其他错误（503、超时、权限）→ `CapUnknown`（fail-open）。
+
+为什么判据写死 `metrics.k8s.io/v1beta1` 而不取组的 preferredVersion：探的必须是"我们的客户端要用的那个 group-version"——`metricsclient` 生成自 v1beta1，集群若只服务别的版本（`k8s.io/metrics` 里还有 v1/v1alpha1），我们的调用同样用不了，此时判"明确不可用"才是正确结论（2026-09-18 实现时核对依赖后修正：原稿写的是"v1beta2 已出现、写死会漏判"，与依赖事实不符）。这样还省掉一次调用——不用先 `ServerGroups` 找组：`/apis` 会把不可用的聚合组照样列出（APIService 挂了也列），组存在本来就是粗判据，判断可用性终究要探一次组内资源。
+
+带 ctx 的调用变体（`...WithContext`）是让 2s 预算真正生效的路径：`DiscoveryInterface` 只承诺无 ctx 版本，真实客户端与 fake 都实现了 `DiscoveryInterfaceWithContext`，故用类型断言走带 ctx 分支、断言失败时退化为无 ctx 调用（探测仍能跑，只是不受预算约束）。
+
+能力记录与访问器：`Preflight` 把结果副本记在 Collector 上，注册层与提示词层各读 `MetricsUsable() bool`（`CapAvailable` 与 `CapUnknown` 都返回 true，未探测也返回 true——fail-open，同时保证旧调用方与既有测试行为不变）。这样 `builtin.Deps` 不需要新增字段：能力是"同一个客户端的注解"，不是新依赖；若改用 bool 字段表达，零值 false 会让"调用方忘传"退化成静默不注册指标工具（fail-silent），比 fail-open 更糟。启动期单线程写、之后只读，不加锁。
+
+顺带修正（与探测同一处代码）：`New` 目前把 `cfg.Context` 原样留着，而 `Collect` 的 `Target.Context` 直接取它——`kube_context` 未配置（默认场景）时它是空串，与 §9"回放时能分辨这份证据来自哪个集群"的意图不符。改为在 `New` 里归一化：`cfg.Context` 非空则用它（同时作为 clientcmd override），否则取 kubeconfig 的 `current-context`，写回 `cfg.Context`。下游（`Target.Context`、报告 meta、启动输出）不用改代码就能拿到实际生效的 context 名。
+
+### 16.4 组合根装配与用户可见性
+
+装配顺序：`k8s.New` 成功 → `coll.Preflight(context.Background())` → 失败则沿用既有 nil 退化（不注册、打告警）；成功则能力留在 Collector 上，另用返回值打启动输出。把探测放在 `New` 之外，是为了让 `New` 的语义边界（纯装配、无网络 IO）不变，探测也能单独测。
+
+启动输出（成功失败都打一行，用户才能事前判断能力边界）：
+
+- 就绪且指标可用：`K8s 诊断就绪: apiserver v1.37.0 @ https://192.168.49.2:8443（context=minikube，metrics=可用）`
+- 就绪但指标明确缺失：`… @ https://192.168.49.2:8443（context=minikube，metrics=不可用（不注册 k8s_metrics；证据包的指标字段会记 optional_unavailable））`
+- 就绪但指标未探测到：`… metrics=未探测到（保留 k8s_metrics，调用失败时按可选源降级）`
+- 不可达：`告警: K8s 采集器未就绪（连接 apiserver 失败: ...），本次不注册 k8s_* 工具`
+
+`/diag` 的拒绝文案要按原因区分：现在写死"检查 kubeconfig"，集群没起时是误导。改为组合根把原因串传进 `cmdDiag`（kubeconfig 层失败 / 集群不可达 / 未接入且原因不明）。
+
+### 16.5 注册、工具清单与分支清单的一致化
+
+三处一起改，缺一处就还是不一致：
+
+1. 注册表（`builtin/register.go`）：`deps.K8s != nil` 时注册 8 个，`deps.K8s.MetricsUsable()` 为真才追加 `k8s_metrics`。其余 8 个工具的注册形态不变。
+2. 工具清单提示词（`main.go`）：现在 `k8sColl != nil` 时追加一整段，段内含 `k8s_metrics` 一句与"用 k8s_metrics 找证据"的步骤句——拆成"基础段 + 指标句（按能力追加）"，避免提示词列出未注册的工具。
+3. 工作流分支清单（`internal/workflow` + `main.go`）：`Workflow` 增 `Requires string`（frontmatter `requires:`），`k8s-diag.md` 标 `requires: k8s`；`RenderBranch()` 保留原签名（等价"全部可用"，零回归），新增 `RenderBranchFor(available map[string]bool) string`；能力名常量 `workflow.CapK8s = "k8s"` 由 workflow 包持有（能力名写在资产里，词表归资产所在包）。组合根传 `{CapK8s: k8sColl != nil}`。分支正文里对 `k8s_metrics` 的引用改成"若该工具未注册则跳过"的措辞——能力缺失时模型不会去调一个不存在的工具，省一轮浪费。
+
+### 16.6 不做的事（边界记账）
+
+- 不读 `KUBECONFIG`：与 §9 既有取舍、以及"配置来源单一（config.yml）+ 环境变量只留给机密"的决定一致。换集群改 `kube_config`。
+- 不做 RBAC 权限自检（`SelfSubjectAccessReview`）：多 1~3 次请求，且受限集群可能不允许 SSAR，反而把"可用"误判成"不可用"；403 仍留到调用期。要加时它属于能力探测的扩展位，不动现有契约。
+- 不做后台巡检 / 主动告警：那是产品边界（"用户提问才诊断"的定位），与本次改动无关。
+- 不做动态重探 / 热恢复：注册表在启动期定型，集群后起要重启 small 才恢复。热恢复要让注册表可变并让提示词重算，成本远大于收益。
+- 超时不进 config.yml（见 §16.3）。
+
+### 16.7 测试与验收
+
+单测（`internal/k8s`，新增 preflight_test.go）：
+
+- 假 discovery（`fakediscovery` 的 `Resources` + `FakedServerVersion`）覆盖：指标可用；指标明确缺失（组不在 `Resources` 里 → NotFound）；探测报错（装 reactor 返回 503 → `CapUnknown`）。
+- httptest 假 apiserver 覆盖真实 HTTP 语义：不可达（连接失败 / 500）→ `Preflight` 返回 error；超时（handler 睡超过 `Config.PreflightTimeout`，测试里压到 50ms）→ error 是 deadline exceeded。
+- context 归一化：临时 kubeconfig 夹具写 `current-context: mk`，断言 `New` 后 `cfg.Context == "mk"`；显式 `Config.Context` 优先于文件。
+
+单测（`internal/tool/builtin`）：注册一致性是本次的核心契约，用 httptest 假 apiserver + 临时 kubeconfig 造出"指标不可用"的 Collector，断言注册表里没有 `k8s_metrics`、其余 8 个在；指标可用时 9 个都在。
+
+单测（`internal/workflow`）：`requires: k8s` 的分支在 `available` 缺 `k8s` 时不渲染、存在时渲染；无 `requires` 的分支不受影响。
+
+真集群（`k8slab`）：`TestPreflightAgainstCluster` 断言真集群下 `Preflight` 无错、`ServerVersion` 非空、`Metrics == CapAvailable`（minikube 已开 metrics-server）。
+
+手工冒烟（真集群才能验，fake 客户端不认拨号语义）：`minikube stop` → 启动 small → 期望"告警 + 9 个工具都不注册 + /tools 里无 k8s_* + /diag 文案是集群不可达"；`minikube start` → 启动 small → 期望"就绪一行 + 9 个工具都在"。
+
+不回归：`go test ./... -count=1 -race`、`go vet ./...`（含 `-tags k8slab`）、`gofmt` 全绿；端到端跑通一个场景（如 `bash Zoo/k8s-lab/eval.sh --keep oom-limit-too-small`）确认工具注册与诊断链路未被破坏。
+
+### 16.8 落地清单
+
+- `internal/k8s/k8s.go`：`defaultPreflightTimeout`；`Availability`/`Capabilities`；`Collector` 的能力字段与 `MetricsUsable()`；`Preflight`；`New` 的 context 归一化；`Config` 增 `PreflightTimeout`。
+- `internal/k8s/preflight_test.go`：上述单测（假 discovery 三态 + httptest 不可达/超时 + context 归一化）。
+- `internal/k8s/preflight_lab_test.go`：真集群探测冒烟（`k8slab` tag）。
+- `internal/k8s/evidence.go`：`Target.Context` 不改代码（靠归一化生效），补一句注释说明来源。
+- `internal/tool/builtin/register.go`：`k8s_metrics` 条件注册。
+- `internal/tool/builtin/`：注册一致性单测（httptest 假 apiserver 夹具）。
+- `internal/workflow/workflow.go`：`Workflow.Requires`、`CapK8s`、`RenderBranchFor`。
+- `internal/workflow/workflows/k8s-diag.md`：frontmatter 加 `requires: k8s`；步骤 5 的 `k8s_metrics` 措辞。
+- `internal/workflow/workflow_test.go`：分支裁剪测试。
+- `main.go`：`Preflight` 调用；启动输出；工具清单与指标句条件化；`RenderBranchFor` 调用；`cmdDiag` 传原因。
+- `main_commands.go` + `main_test.go`：`cmdDiag` 文案按原因区分与测试同步。
+- 本文档：本章 + §9 加指向 + §11 加一行 + §14 追加决策 + §15 追加待决。
+
+### 16.9 风险
+
+- 启动多一次网络请求：最坏 2s（黑洞地址等满超时；连接被拒是立即失败）。这是有意的代价，已确认不加配置开关。实测补一条：`no route to host`（路由不可达）自然失败要约 3s，预算会把它截在 2s——用户看到的是 `context deadline exceeded` 而不是更具体的网络错误，归因信息弱一点，但结论（不可达、不注册）不变。
+- 探测结果有时效：见 §16.2 的边界；调用期降级仍是兜底。
+- `ServerResourcesForGroupVersion` 可能因 APIService 抖动落 `CapUnknown` → 保留 `k8s_metrics`（有意的 fail-open，代价是偶尔一次调用期失败）。
+- 分支裁剪是静态能力名匹配：集群恢复后不会自动让分支回到提示词，要重启 small——与"不做热恢复"一致。
+
+
+## 17. 运行期连接类失败的归因与文案（2026-09-19）
+
+### 17.1 问题
+
+§16 解决的是"开局能不能用"；开局之后集群断开，能力声明（工具注册、提示词、分支清单）不会变，
+工具调用只能以业务失败回灌。回灌的原文是传输层错误——`dial tcp 192.168.49.2:8443:
+connect: connection refused`——这句话里没有"集群没了"这个结论，模型得自己从句子里推断；
+推断错了就会把"取不到证据"读成"Pod 没问题"。
+
+这条错误文本有三条通道，首版只堵了第一条、且文档按"全堵了"写（2026-09-19 收口时补齐）：
+
+- 工具层的业务失败文案（`<动作>失败: <原始错误>`）。
+- 证据包里的降级说明——`Collect` 各来源失败会把原始错误写进 `notes`（`工作负载规格未取到: dial tcp …`）、`pvc.events_error` 同理，而 `k8s_evidence` 是诊断主入口，模型读的正是这份 JSON。
+- 视图里的错误字段——`NodeView.allocation_error`（`k8s_node`/`k8s_nodes` 的输出，还会经 evidence 的"节点分配汇总失败"那条 note 二次进模型）与 `PodView.sa_read_error`。
+
+第三条路径是 `Collect` 第一步取 Pod 失败：直接 `return nil, err`，连 `Notes` 都没有，等于把"什么都没拿到"伪装成一次普通失败——这条由工具层文案兜住。
+
+用户侧同样：启动那行早就打完了，运行期不再打印任何东西；`/diag` 虽然每次会重探目标
+（10s 预算），但文案是 `读不到目标 Pod x/y：<原始错误>`，集群没起时用户拿到的是一句 dial 错误。
+
+### 17.2 判据与边界
+
+只归因传输层（`internal/k8s/failure.go`，纯函数、只用标准库）：
+
+- `context.DeadlineExceeded` / `net.Error.Timeout()` / 原文含 `i/o timeout` → 调用超时。
+- `*net.DNSError` / `connection refused` / `no route to host` / `network is unreachable` /
+  `no such host` / `dial tcp` → 集群不可达。
+- 其余（4xx 业务错误：`pods not found`、`Forbidden`）原样回灌——它们的原文已经说清，
+  再包一层反而丢细节；这也是"只在系统边界防御、信任内部契约"的延续。
+
+判据顺序：先结构化（`errors.Is`/`errors.As`），再回落到关键子串——client-go 把错误包了
+`url.Error`/`net.OpError` 好几层，字符串兜底最不容易漏。子串表里超时排在 `dial tcp` 之前：
+拨号超时的原文同时含两者，不能归成"连接被拒"。
+
+作用面（"统一"以本清单为准，逐处可核对；首版只覆盖了第一条与 3 处 note，2026-09-19 收口补齐）：
+
+- 工具层业务失败文案：`<动作>失败: ` + `ExplainError(err)`（10 处采集调用）。
+- 证据包降级说明：`Collect` 的 7 处 `Notes`（工作负载 / 事件 / 日志 / Pod 指标 / 节点信息 / 节点指标 / PVC）
+  与 `pvc.events_error`。
+- 视图里的错误字段：`NodeView.allocation_error`（[read.go] 的 `Node` 与 `Nodes` 两处赋值）、
+  `PodView.sa_read_error`——字段语义不变（仍是"这一项没取到、原因在此"），只把内容从原始错误换成归因文案。
+- `/diag` 拒绝文案：`ExplainError` + 仅连接类失败时补的用户向建议（由 `IsConnFailure` 判断）。
+
+括号里保留的是"分类依据"（`connection refused` / `i/o timeout` / `no such host` 这类），不保留完整原文。
+地址与端口的去向随收口改了：原来写"由 context 交代"不成立——`context` 只是 context 名，产物里没有服务端地址；
+现在落到 `Target.api_server`（证据包与报告都带，`report.md` 头部与启动行也展示，见 §17.6），
+于是"连的是哪个集群/端点"在产物里可查，而模型回灌保持短。（首版测试注释与 §17.2/§17.4 曾写成
+"保留原始细节、人工排查要看 dial 地址"，与实现不符，已按代码校正。）
+
+不做的事：不重探集群、不改注册表、不做热恢复（那是 §16.6 的边界）；"首次取 Pod 失败"仍按硬失败处理、
+不写成 `Notes`（它是整体失败而非单来源降级——首版的表述把它误写成了"所有连接失败都不进 Notes"）。
+
+### 17.3 文案
+
+`ExplainError` 只产结论短语，调用方保留既有 `<动作>失败: ` 前缀：
+
+- 不可达：`集群不可达（connection refused）`
+- 超时：`调用超时（i/o timeout）`
+
+建议语按受众在调用方各拼一次，不写进短语里——否则要么在 10 处工具文案里重复，要么让同一句
+兼具两种语气（首版就长这样：`读取 Pod 失败: 集群不可达（…）：本次未取到数据；…后重试。`，
+双冒号加句号堆叠，还与其它失败文案的风格不一致）：
+
+- 用户向：`/diag` 用 `IsConnFailure` 判定是连接类后追加 `；确认集群可达（kubectl 能连上）后重试`。
+  业务错误（Pod 不存在、权限不足）不能套这句，那会给出走不通的下一步。
+- 模型向：base 提示词的 k8s 段统一交代一句——"工具回灌或 notes 里出现'集群不可达/调用超时'意味着
+  本次没取到数据（不是'这里没问题'）：可重试，或据实写进 missing_evidence 并压低置信度"。
+  `k8s-diag` 分支步骤 6 原有的"不把没取到证据当排除"继续管分支内纪律，两句不冲突。
+
+工具回灌因此变短且无标点堆叠：`读取 Pod 失败: 集群不可达（connection refused）`；
+证据包 notes 同理：`事件未取到: 集群不可达（connection refused）`。
+文案里若带 URL（client-go 的错误原文），userinfo 已脱敏为 `***`，见 §17.6 第 4 条。
+
+### 17.4 落地清单
+
+- `internal/k8s/failure.go`：`classifyConn` + `ExplainError`（结论短语）+ `IsConnFailure`（要不要补建议）
+  + `RedactCredentials`（文本级凭据脱敏，`ExplainError` 的原文分支也过它）。
+- `internal/k8s/evidence.go`：7 处 `Notes` 文案与 `pvc.events_error` 走 `ExplainError`；`Target` 填 `api_server`。
+- `internal/k8s/read.go`：`Node`/`Nodes` 两处 `allocation_error`、Pod 的 `sa_read_error` 走 `ExplainError`。
+- `internal/k8s/k8s.go`：`Collector` 记 `rest.Host`（`New` 里与 context 同处归一化，落值前过 `sanitizeAPIServer` 去 userinfo），供产物与启动行使用。
+- `internal/k8s/view.go`：`Target` 增 `api_server`（`json:"api_server,omitempty"`）。
+- `internal/k8s/report.go`：`SaveReportView` 补 `target.api_server`；`report.md` 头部按需追加 `@ <api_server>`；
+  `ReportSchemaVersion` 1 → 2（常量注释要求字段增减时递增）。
+- `internal/tool/builtin/k8s.go`：10 处采集失败回灌走 `k8s.ExplainError`（落盘失败仍用原文）。
+- `internal/tool/builtin/k8s_test.go`：`TestK8sToolClusterDownText`（关掉的 httptest 端点当死集群，
+  断言回灌含"集群不可达"与分类依据 `connection refused`）。
+- `main.go`：`Preflight` 后启动行带 `@ <api_server>`；base 提示词 k8s 段补一句"集群不可达/调用超时 = 本次没取到数据"。
+- `main_commands.go`：`/diag` 预检拒绝文案归因，仅连接类失败补用户向建议。
+
+### 17.5 测试
+
+单测（`internal/k8s`）：
+
+- `failure_test.go`：判据（被拒 / 拨号超时 / ctx 超时 / DNS / 路由不可达）、短语形态、`IsConnFailure`；
+  另加 `RedactCredentials` 的表驱动用例（`user:pass@`、只有 `user@`、无凭据、URL 夹在长文本中间、
+  非 URL 的 `a@b.com` 不许误伤），并断言 `ExplainError` 的原文分支已脱敏。
+- `k8s_test.go`：`sanitizeAPIServer` 用例（普通 URL 原样、`user:pass@` 去 userinfo、带 path 保留 path、解析失败返回空）。
+- `TestCollect_AllSourcesConnFail`：Pod 可取、其余来源（工作负载 / 事件 / 日志 / Pod 指标 / 节点 / 节点指标 / PVC）
+  全部返回连接类错误 → 遍历所有 `notes` 与 `pvc.events_error`，断言都不含传输层原文（`dial tcp`）
+  且都含结论短语。首版只有一条"仅事件失败"的用例，等于 1/7 覆盖却写着覆盖了 notes 通道，本次改成全来源。
+- `TestCollect_ViewErrorFieldsConclusion`：节点可取、集群范围列 Pod 与 ServiceAccount 取不到 →
+  断言 `allocation_error` 的三个出口（`Node` 字段 / `Nodes` 字段 / evidence 的"节点分配汇总失败"note）
+  与 `sa_read_error` 都是归因文案且不含原文。
+
+单测（`internal/tool/builtin`）：`TestK8sToolClusterDownText`（关掉的 httptest 端点当死集群，
+断言回灌含"集群不可达"与分类依据 `connection refused`；fake 客户端不认拨号语义，与 §16.7 同一取舍）。
+
+门禁：`go test -race ./...`、`go vet ./...`（含 `-tags k8slab`）、`gofmt` 全绿。
+
+真集群只做人工确认：本机 minikube 正常时工具不误报（不触发归因分支）。这条没有回归断言，
+先记为人工结论；要机器化就得在 k8slab 加一条"正常集群下回灌文案不含'集群不可达'"的用例。
+
+### 17.6 收口：通道统一与端点落盘（2026-09-19 同日）
+
+首版交付有三个问题，第 4 条是同一天复核输出面时追加的，本次一并收口：
+
+1. 通道只堵了一半，文档却按"全堵了"写。真实情况是 7 处 notes 只改了 3 处（工作负载 / 事件 / Pod 指标），日志、节点信息、节点指标、PVC 四处仍是原始错误；`allocation_error` 与 `sa_read_error` 两个视图字段完全没动，前者还会经"节点分配汇总失败"那条 note 二次进模型。后果是同一份 evidence.json 里既有 `事件未取到: 集群不可达（connection refused）`、又有 `日志未取到（容器 app…）: dial tcp …: connection refused`——正是 §17.1 要消灭的矛盾信号。现在按 §17.2 的清单统一。
+2. "地址由 context 交代"的技术依据不成立：context 只是 context 名，产物里没有服务端地址，等于地址在所有产物里消失。现在 `Target` 增 `api_server`（值取 `New` 里的 `rest.Host`，与 context 同处归一化，见 §16.3），证据包与报告都带，`report.md` 头部与 CLI 启动行也展示（`apiserver v1.37.0 @ https://…（context=…）`）；模型回灌继续保持短，不把地址塞回去。
+3. 测试用单点覆盖冒充统一覆盖：`TestCollect_NotesUseConnConclusion` 只让事件来源失败，所以那 4 处没改也能绿。改成 §17.5 的"全来源强断言"，并把 `allocation_error` 的两个出口一起纳入。
+4. 输出面的凭据脱敏（同日复核 `net/http.stripPassword` 后补）：`api_server` 落产物/启动行前去掉 URL 里的 userinfo（`url.Parse` + `u.User = nil`，解析失败则不落，schema/host/port/path 保留）；错误文本（工具回灌、启动告警、`/diag` 拒绝文案）过文本级脱敏 `RedactCredentials`，把 `://user[:pass]@` 抹成 `://***@`。依据是红线"机密绝不入库"——kubeconfig 的 `server` 允许 `user:pass@host` 写法，而 net/http 只把 password 掩成 `***`（[client.go 的 stripPassword]），用户名会随错误原文露出来；这是本次新加 `api_server` 之后才出现的暴露面，顺手一起封掉。
+
+契约变化：报告 JSON 增字段 → `ReportSchemaVersion` 由 1 递增到 2（常量注释要求"字段增减时递增"）；证据包无版本字段，按增字段处理；`cmd/k8seval` 读的是 `expect.json` 的 target，不受影响。
+
+一条做事要求（供下轮复查）：文档里"N 处 / N 个来源"这类可核对的数字，必须在改完之后按代码复核一遍再写定；同时"改完复读代码 + 有测试覆盖"是硬要求。本次 overclaim 有三处（§17.2 / §17.4 / §17.5），根因是"先按计划写文档、再改代码"把计划当成了结果，而当时只有单点覆盖的测试——4 处编辑没落到磁盘，它照样是绿的。
 
 
 ## 实现时踩坑

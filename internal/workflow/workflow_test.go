@@ -40,6 +40,10 @@ func TestLoad_K8sDiag(t *testing.T) {
 	if w.Description == "" || w.Trigger == "" || w.Input == "" || w.Output == "" || w.Stop == "" {
 		t.Errorf("k8s-diag 分支元数据不全: %+v", w)
 	}
+	// requires 是能力裁剪的挂点（k8s 客户端未就绪时该分支不注入），资产里漏写会让裁剪失效。
+	if w.Requires != CapK8s {
+		t.Errorf("k8s-diag 的 requires = %q，期望 %q", w.Requires, CapK8s)
+	}
 	for _, kw := range []string{"k8s_pod", "k8s_evidence", "k8s_report", "previous", "missing_evidence", "分支完成:k8s-diag"} {
 		if !strings.Contains(w.Steps, kw) {
 			t.Errorf("k8s-diag 步骤缺 %q:\n%s", kw, w.Steps)
@@ -84,6 +88,39 @@ func TestRenderBranch(t *testing.T) {
 // fs 构造单个虚拟 workflow 文件系统。
 func fsOf(name, content string) fstest.MapFS {
 	return fstest.MapFS{"workflows/" + name: {Data: []byte(content)}}
+}
+
+// TestRenderBranchFor 分支清单的能力裁剪：requires 不满足的分支整段不注入（连步骤也不出现），
+// 满足时与不裁剪完全一致；全被裁掉时返回空串（不留一个空的分支段）。
+func TestRenderBranchFor(t *testing.T) {
+	m, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// k8s 能力缺失：k8s-diag 整段消失，无 requires 的 pdf 不受影响。
+	s := m.RenderBranchFor(map[string]bool{})
+	if strings.Contains(s, "[k8s-diag]") || strings.Contains(s, "分支完成:k8s-diag") {
+		t.Errorf("k8s 能力缺失时不该注入 k8s-diag 分支（含步骤）:\n%s", s)
+	}
+	if !strings.Contains(s, "[pdf]") {
+		t.Errorf("无 requires 的分支不该被裁掉:\n%s", s)
+	}
+	// 能力满足 / nil：与"不裁剪"逐字一致（零回归）。
+	if got, want := m.RenderBranchFor(map[string]bool{CapK8s: true}), m.RenderBranch(); got != want {
+		t.Error("能力齐全时应与 RenderBranch 逐字一致")
+	}
+	if m.RenderBranchFor(nil) != m.RenderBranch() {
+		t.Error("available 为 nil 应等价于不裁剪")
+	}
+
+	// 只有 requires 分支且能力缺失：返回空串（组合根不追加空段）。
+	m2, err := load(fsOf("only.md", "---\nname: only\nrequires: nope\n---\n正文"))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := m2.RenderBranchFor(map[string]bool{}); got != "" {
+		t.Errorf("全部分支被裁掉时应返回空串，实际 %q", got)
+	}
 }
 
 func TestLoad_ErrorCases(t *testing.T) {

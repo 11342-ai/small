@@ -134,6 +134,7 @@ func TestRenderReportMD(t *testing.T) {
 // TestSaveReportViewFillsMetaAndWritesBothFiles 验证落盘：命名规则、元信息补齐、内容可反序列化。
 func TestSaveReportViewFillsMetaAndWritesBothFiles(t *testing.T) {
 	c := newTestCollector(t, nil, nil, nil, Config{Context: "minikube-test"})
+	c.apiServer = "https://10.0.0.1:6443" // New 才会填（fake 构造路径不经过它），这里直填以断言契约
 	r := ReportView{
 		Target:      Target{Namespace: "diag-lab", Pod: "badimg"},
 		Symptoms:    []string{"ImagePullBackOff"},
@@ -157,7 +158,7 @@ func TestSaveReportViewFillsMetaAndWritesBothFiles(t *testing.T) {
 	if err := json.Unmarshal(raw, &back); err != nil {
 		t.Fatalf("report.json 不是合法 JSON: %v", err)
 	}
-	// 三项"本该由系统给"的元信息必须被补齐。
+	// 四项"本该由系统给"的元信息必须被补齐。
 	if back.SchemaVersion != ReportSchemaVersion {
 		t.Errorf("schema_version 未补齐: %d", back.SchemaVersion)
 	}
@@ -166,6 +167,10 @@ func TestSaveReportViewFillsMetaAndWritesBothFiles(t *testing.T) {
 	}
 	if back.Target.Context != "minikube-test" {
 		t.Errorf("target.context 未从采集器配置补齐: %q", back.Target.Context)
+	}
+	// 端点地址要落进产物：只有 context 名看不出连的是哪个 IP（§17.6）。
+	if back.Target.APIServer != "https://10.0.0.1:6443" {
+		t.Errorf("target.api_server 未补齐: %q", back.Target.APIServer)
 	}
 	if back.RootCause.Summary != "镜像 tag 不存在" || len(back.Evidence) != 1 {
 		t.Errorf("报告内容不完整: %+v", back)
@@ -177,5 +182,9 @@ func TestSaveReportViewFillsMetaAndWritesBothFiles(t *testing.T) {
 	}
 	if !strings.Contains(string(mdRaw), "Root Cause: 镜像 tag 不存在") {
 		t.Errorf("report.md 内容不对:\n%s", mdRaw)
+	}
+	// 人读报告也要能看到端点：Target 行带 @ 地址（§17.6）。
+	if !strings.Contains(string(mdRaw), "Target: diag-lab/badimg @ https://10.0.0.1:6443") {
+		t.Errorf("report.md 的 Target 行缺端点地址:\n%s", mdRaw)
 	}
 }

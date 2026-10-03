@@ -130,9 +130,30 @@ func main() {
 		Context: cfg.KubeContext,
 		Dir:     filepath.Join(cfg.K8sDir, id),
 	})
+	// k8sReason 未接入的原因（/diag 拒绝时照原样说）：kubeconfig 读不到是配置问题、
+	// 集群不可达是环境问题，两者要用户做的事不同，不能共用一句"检查 kubeconfig"（§16.4）。
+	var k8sReason string
 	if err != nil {
-		fmt.Printf("告警: K8s 采集器未就绪（%v），本次不注册 k8s_* 工具\n", err)
+		// 错误原文一律过脱敏：kubeconfig 的 server 可能带 userinfo，凭据不许出现在告警与命令文案里（§17.6）。
+		reason := k8s.RedactCredentials(err.Error())
+		fmt.Printf("告警: K8s 采集器未就绪（读取 kubeconfig 失败: %s），本次不注册 k8s_* 工具\n", reason)
+		k8sReason = "读取 kubeconfig 失败（" + reason + "）；检查 config.yml 的 kube_config（缺省 ~/.kube/config）后重启"
 		k8sColl = nil
+	} else if caps, perr := k8sColl.Preflight(context.Background()); perr != nil {
+		// 启动期探测（k8s-diagnosis.md §16）：把"注册了但用不了"变成"没注册"，
+		// 让注册表、提示词、真实可用性三者一致；失败沿用既有 nil 退化路径。
+		reason := k8s.RedactCredentials(perr.Error())
+		fmt.Printf("告警: K8s 采集器未就绪（%s），本次不注册 k8s_* 工具\n", reason)
+		k8sReason = "连接 apiserver 失败（" + reason + "）；确认集群可达（kubectl 能连上）后重启"
+		k8sColl = nil
+	} else {
+		// 成功也打一行：用户事前就能看到接入的是哪个端点、哪个版本、指标能力如何。
+		endpoint := ""
+		if caps.APIServer != "" {
+			endpoint = " @ " + caps.APIServer
+		}
+		fmt.Printf("K8s 诊断就绪: apiserver %s%s（context=%s，%s）\n",
+			caps.ServerVersion, endpoint, caps.Context, metricsCapText(caps.Metrics))
 	}
 	// 工作流分支（workflow.md §3）：embed 资产解析（坏文件 = 开发错误 fail fast），
 	// 分支清单渲染进 base 提示词（契约层），模型按触发条件自动进入对应分支。
@@ -173,23 +194,33 @@ func main() {
 		"核对两个版本/处理前后文档（如原版 vs 整理产物）时用 file_diff 比对，只需实质内容差异时带 ignore 组合（space/punct/symbol）；" +
 		"访问工作区外路径（如 ~/Pdf）前，先向用户说明要访问的目录/文件并征得同意，确认后再访问；系统敏感目录（/etc /proc /usr 等）一律不访问。"
 	// K8s 工具只在采集器就绪时才会注册，提示词条件拼接——避免"提示词列了工具、注册表里没有"的错配。
+	// 指标工具按能力裁剪（§16.5），所以它的清单句与"找证据"的步骤句也按能力拼。
 	if k8sColl != nil {
 		base += "可用工具（K8s 只读诊断）：k8s_pod（读 Pod 现状摘要：phase、waiting reason、上次终止原因、restartCount、容器名与节点名）、" +
 			"k8s_events（读事件：调度失败/拉镜像失败/探针失败/容器退避，Warning 优先）、" +
-			"k8s_logs（读容器日志，previous=true 看上次崩溃现场，container 缺省自动选异常容器）、" +
-			"k8s_metrics（读实时用量与占 limit 比例）、k8s_node（读某个节点的状态、可分配量、污点与 Pod 数）、" +
+			"k8s_logs（读容器日志，previous=true 看上次崩溃现场，container 缺省自动选异常容器）"
+		metricsTool, metricsStep := "", ""
+		if k8sColl.MetricsUsable() {
+			metricsTool = "、k8s_metrics（读实时用量与占 limit 比例）"
+			metricsStep = "与 k8s_metrics"
+		}
+		base += metricsTool +
+			"、k8s_node（读某个节点的状态、可分配量、污点与 Pod 数）、" +
 			"k8s_nodes（列全部节点：标签、taints、余量；Pod 还在 Pending 时没有 node_name，只能用这个看节点侧）、" +
 			"k8s_workload（读工作负载规格真源：limits/probes/replicas/strategy/conditions）。" +
 			"用户报告 Pod 异常（一直重启、起不来、OOMKilled、一直 Pending、探针失败）时：先用 k8s_pod 取症状，" +
-			"再用 k8s_events 看 k8s 卡在哪一步，用 k8s_logs（含 previous）与 k8s_metrics 找证据，" +
+			"再用 k8s_events 看 k8s 卡在哪一步，用 k8s_logs（含 previous）" + metricsStep + "找证据，" +
 			"必要时用 k8s_node/k8s_nodes/k8s_workload 交叉验证；诊断全程只读，不要尝试修改集群。" +
+			"工具回灌或证据包 notes 里出现“集群不可达/调用超时”，意味着本次没取到数据（不是“这里没问题”）：" +
+			"可重试，或据实写进 missing_evidence 并压低置信度。" +
 			"诊断开始时优先用 k8s_evidence 一次拿全证据（返回里的 notes 带类别：只有 required_failed 才算缺失证据）；" +
 			"得出结论后用 k8s_report 提交（每条证据必须带来源；缺关键证据时写进 missing_evidence 并压低置信度），" +
 			"它会落盘 report.json 与人读的 report.md。"
 	}
 	// 工作流分支清单（workflow.md §3.3）：注入"可用工作流分支"段，模型按触发条件
 	// 自动进入对应分支（如 PDF 解析任务 → pdf 分支），稳定处理而非临场发挥。
-	base += wfMgr.RenderBranch()
+	// 按启动期能力裁剪：能力不满足的分支不注入——否则模型会进入一个"没有任何工具"的分支（§16.5）。
+	base += wfMgr.RenderBranchFor(map[string]bool{workflow.CapK8s: k8sColl != nil})
 	memBlock := ""
 	if boot := loadBootstrapMemory(cfg.MemoryDir); boot != "" {
 		memBlock = "<memory>\n" + boot + "\n</memory>"
@@ -211,7 +242,7 @@ func main() {
 		guiCmd.Register(cmdSession(id))
 		guiCmd.Register(cmdTools(reg))
 		guiCmd.Register(cmdPdf())
-		guiCmd.Register(cmdDiag(k8sColl))
+		guiCmd.Register(cmdDiag(k8sColl, k8sReason))
 		guiSrv := gui.New(gui.Config{
 			Addr:      cfg.GUIAddr,
 			FileRoot:  fileRoot,
@@ -276,8 +307,8 @@ func main() {
 	cmdReg.Register(cmdClear(a))
 	cmdReg.Register(cmdPersona(a, mgr, store, id, compose, &p, &metaNeeded))
 	cmdReg.Register(cmdPdf())
-	// /diag：显式进入 k8s 诊断分支（采集器未就绪时命令内部拒绝并提示）。
-	cmdReg.Register(cmdDiag(k8sColl))
+	// /diag：显式进入 k8s 诊断分支（采集器未就绪时命令内部拒绝并提示，附启动期探测给出的原因）。
+	cmdReg.Register(cmdDiag(k8sColl, k8sReason))
 
 	// 4. 多轮对话循环：stdin 逐行输入，"exit" 退出。
 	//    Agent.Run 每轮追加历史并推进一轮；持久化由 agent 在 Run 成功时自动落盘。
@@ -380,6 +411,19 @@ var errInject = errors.New("inject-agent-message")
 // execAllow exec 工具默认白名单（只读命令起步；find/cp 为 PDF 管理等动作所需，
 // exec 本身是 Ask 每步确认，cp 等写操作有确认门兜底，pdf-workflow.md §6）。
 var execAllow = []string{"ls", "cat", "grep", "head", "tail", "echo", "date", "pwd", "whoami", "find", "cp"}
+
+// metricsCapText 把指标能力渲染成启动输出里的一句话（k8s-diagnosis.md §16.4）：
+// 三种状态的后续动作不同——可用给个明确确认、明确缺失要说清工具被裁、未探测到要说清仍保留。
+func metricsCapText(a k8s.Availability) string {
+	switch a {
+	case k8s.CapAvailable:
+		return "metrics=可用"
+	case k8s.CapUnavailable:
+		return "metrics=不可用（不注册 k8s_metrics；证据包的指标字段会记 optional_unavailable）"
+	default:
+		return "metrics=未探测到（保留 k8s_metrics，调用失败时按可选源降级）"
+	}
+}
 
 // buildAgent 装配 agent（CLI/GUI 共用，gui.md §4.2）：注入提示词/会话/预算/轮次/权限表。
 // toolObs（工具事件）与 confirm（Ask 确认）由调用方传——CLI 用打印+trace / stdin 确认，

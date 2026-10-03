@@ -20,8 +20,9 @@ type Deps struct {
 	File *FileConfig
 	// Cache 文档解析工具配置（缓存根）：nil 则不注册 doc_* 工具（tool-lit.md §6）。
 	Cache *LitConfig
-	// K8s 只读采集器（内部是 client-go 客户端，不是"控制面"）：nil 则不注册 k8s_* 工具
-	// （见 Zoo/model/k8s-diagnosis.md）。
+	// K8s 只读采集器（内部是 client-go 客户端，不是"控制面"）：nil 则不注册 k8s_* 工具；
+	// 非 nil 时指标工具还要过 MetricsUsable（集群没有 metrics.k8s.io 时不注册，
+	// 见 Zoo/model/k8s-diagnosis.md §16.5）。
 	K8s *k8s.Collector
 }
 
@@ -56,9 +57,15 @@ func RegisterBuiltins(reg *tool.Registry, deps Deps) error {
 		tools = append(tools, LitParse(deps.Cache), LitRead(deps.Cache), LitClean(deps.Cache))
 	}
 	if deps.K8s != nil {
+		// 采集器就绪即注册这八个；指标工具单独按能力判定：集群没有 metrics.k8s.io 时它注定
+		// 调用失败，注册了只会让提示词列出一个用不了的工具（能力来源见 §16.5）。
+		// MetricsUsable 对"未探测到"返回 true（fail-open），故没跑 Preflight 的调用方行为不变。
 		tools = append(tools, K8sPod(deps.K8s), K8sWorkload(deps.K8s), K8sEvents(deps.K8s),
-			K8sLogs(deps.K8s), K8sMetrics(deps.K8s), K8sNode(deps.K8s), K8sNodes(deps.K8s),
+			K8sLogs(deps.K8s), K8sNode(deps.K8s), K8sNodes(deps.K8s),
 			K8sEvidence(deps.K8s), K8sReport(deps.K8s))
+		if deps.K8s.MetricsUsable() {
+			tools = append(tools, K8sMetrics(deps.K8s))
+		}
 	}
 	if err := reg.RegisterAll(tools...); err != nil {
 		return err
