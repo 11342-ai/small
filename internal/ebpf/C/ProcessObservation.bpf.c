@@ -95,3 +95,64 @@ int tracepoint__sched__sched_process_exit(
   bpf_ringbuf_submit(e, 0);
   return 0;
 }
+
+// 预期实现的指标 : syscall次数 | 错误码 | 耗时 | 调用类型 | PID/TGID
+// 针对的调用 : read/write/openat/futex
+// 这个的核心应该是计数 : 直接 ++ 或者 --； 而且，最好是隔着一段时间再传输一次，做一个定时任务
+// 错误码分布这个问题 ，也是可以直接计数，不过得先查询文档或者是说只处理/记录其中可以模拟的几种
+// 对于 p99 这类东西，我们应该可以实现一个类似分桶的机制，只保留固定长度的数组，或大顶堆，维护某一个层级大概的大小
+SEC("tracepoint/raw_syscalls/sys_enter")
+int tracepoint___raw_syscalls__sys_enter(struct trace_event_raw_sys_enter *ctx) {
+    u32 temp = ctx->id;
+    if (temp != 0 || temp != 1 || temp != 257 || temp != 202)  // 看操作号是不是那个对应调用的
+        return 0;
+    
+    struct sys_enter *e = bpf_ringbuf_reserve(&process_observation, sizeof(*e), 0);
+    if (!e) 
+        return 0;
+    
+    e->id = temp; // 系统调用号
+    e->pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+    e->tgid = bpf_get_current_pid_tgid() >> 32;  // 线程组id
+
+    struct task_struct *curr = bpf_task_from_pid(e->tgid); //线程组的一个任务状态
+    if (!curr) {
+        // reserve 成功但没 submit,必须 discard 归还,否则这条记录一直占着不还,消费端读不下去
+        bpf_ringbuf_discard(e, 0);
+        return 0;
+    }
+
+    BPF_CORE_READ_STR_INTO(&e->comm, curr, comm);
+    bpf_task_release(curr); // 从 pid 取到的是带引用计数的,读完 comm 就得释放,否则泄漏
+
+    bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+
+SEC("tracepoint/raw_syscalls/sys_exit")
+int tracepoint___raw_syscalls__sys_exit(struct trace_event_raw_sys_exit *ctx) {
+    u32 temp_id = ctx->id;
+    if (temp_id == 0 || temp_id == 1 || temp_id == 257 || temp_id == 202)  // 看操作号是不是那个对应调用的
+        return 0;
+
+    struct sys_exit *e = bpf_ringbuf_reserve(&process_observation, sizeof(*e), 0);
+    if (!e) 
+        return 0;
+
+    e->id = temp_id;
+    e->pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+    e->tgid = bpf_get_current_pid_tgid() >> 32;  // 线程组id
+    e->ret = ctx->ret;
+
+    struct task_struct *curr = bpf_task_from_pid(e->tgid); //线程组的一个任务状态
+    if (!curr) {
+        // reserve 成功但没 submit,必须 discard 归还,否则这条记录一直占着不还,消费端读不下去
+        bpf_ringbuf_discard(e, 0);
+        return 0;
+    }
+
+    e->ts = bpf_ktime_get_ns() - BPF_CORE_READ(curr, start_time);
+
+    
+    return 0;
+}

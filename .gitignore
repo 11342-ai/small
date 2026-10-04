@@ -13,6 +13,7 @@ internal/ebpf_temp/Zoo/
 internal/ebpf/C/vmlinux.h
 internal/ebpf/C/*.o
 internal/ebpf/ebpf
+internal/ebpf/env_simulation/env1
 
 # k8s 概念图（本地参考用）
 k8s.svg

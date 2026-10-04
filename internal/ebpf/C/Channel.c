@@ -10,7 +10,7 @@ struct {
 enum proc_event_kind {
   SELF_PROC_EVENT_FORK = 0,
   SELF_PROC_EVENT_EXIT = 1,
-  RAW_SELF_PROC_EVENT_FORK = 2,
+  RAW_SELF_PROC_EVENT_FORK = 2, // 目前对应的函数已经丢用，保留下来是为了学习用的
 };
 
 struct fork_event {
@@ -46,4 +46,22 @@ struct exit_event {
   __u32 term_sig;     // 0 = 正常退出;非 0 = 被该信号终止
   bool group_dead;    // 用来判断那个是线程退出还是进程退出
   char comm[TASK_COMM_LEN];
+};
+
+struct sys_enter{
+    __u32 kind;
+    __u32 id ; // 系统调用号
+    __u32 pid; // 线程号
+    __u32 tgid; //线程组编号
+    char comm[TASK_COMM_LEN]; // 线程名称
+};
+
+struct sys_exit {
+    __u32 kind;
+    __u32 id ; // 系统调用号
+    __u32 pid; // 线程号
+    __u32 tgid; //线程组编号
+    u64 ts;
+    long int ret; // 调用的错误码头(>=0 是正常的; <0 就是代表错误)
+    char comm[TASK_COMM_LEN]; // 线程名称
 };
