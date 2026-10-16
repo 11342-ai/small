@@ -1,0 +1,29 @@
+#!/usr/bin/env bpftrace
+ 
+// 跟踪 MySQL 中的 dispatch_command 函数
+uprobe:/usr/sbin/mysqld:dispatch_command
+{
+    // 将命令执行的开始时间存储在 map 中
+    @start_times[tid] = nsecs;
+    
+    // 打印进程 ID 和命令字符串
+    printf("MySQL command executed by PID %d: ", pid);
+    
+    // dispatch_command 的第三个参数是 SQL 查询字符串
+    printf("%s\n", str(arg3));
+}
+ 
+uretprobe:/usr/sbin/mysqld:dispatch_command
+{
+    // 从 map 中获取开始时间
+    $start = @start_times[tid];
+    
+    // 计算延迟，以毫秒为单位
+    $delta = (nsecs - $start) / 1000000;
+    
+    // 打印延迟
+    printf("Latency: %u ms\n", $delta);
+    
+    // 从 map 中删除条目以避免内存泄漏
+    delete(@start_times[tid]);
+}

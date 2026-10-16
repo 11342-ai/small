@@ -1,0 +1,83 @@
+#!/usr/bin/env bpftrace
+/*
+ * 指标4:父子/comm 创建来源
+ * 数据源:raw tracepoint sched_process_fork,args 就是 (parent, child) 两个 task_struct。
+ * 注意:task_struct 里 pid 字段其实是 TID,tgid 才是进程号;
+ *       pid == tgid 说明新任务是新进程,不等则是新线程。
+ *
+ * 运行:sudo bpftrace fork_detail.bt
+ * 需要 root,以及内核 BTF(rawtracepoint 里要读 task_struct 字段)。
+ */
+
+BEGIN
+{
+    printf("tracing sched_process_fork... Ctrl-C 结束\n");
+}
+
+rawtracepoint:sched_process_fork
+/uid == 1000/                     /* 只盯自己;去掉这行看全系统 */
+{
+    $parent = (struct task_struct *)arg0;
+    $child  = (struct task_struct *)arg1;
+
+    $ptid  = $parent->pid;
+    $ptgid = $parent->tgid;
+    $ctid  = $child->pid;
+    $ctgid = $child->tgid;
+    $pcomm = str($parent->comm);
+    $ccomm = str($child->comm);
+    $kind  = $ctid == $ctgid ? "proc" : "thread";
+
+    @total++;
+
+    @by_parent[$pcomm] = count();
+    @by_child[$ccomm] = count();
+    @by_kind[$kind] = count();
+    @parent_kind[$pcomm, $kind] = count();
+    @edge[$pcomm, $ccomm] = count();
+    @by_uid[uid] = count();
+
+    /* 只有新进程记调用栈:线程栈量大且同质 */
+    if ($ctid == $ctgid) {
+        @proc_stack[kstack] = count();
+        @proc_stack_user[ustack] = count();
+    }
+
+    /* 明细采样,每 500 次打一条 */
+    if (@total % 500 == 0) {
+        printf("%-15s tid=%-6d tgid=%-6d -> %-15s tid=%-6d tgid=%-6d %s\n",
+               $pcomm, $ptid, $ptgid, $ccomm, $ctid, $ctgid, $kind);
+    }
+}
+
+interval:s:1
+{
+    printf("\n===== 1s =====\n");
+    print(@by_parent, 5);
+    print(@by_child, 5);
+    print(@parent_kind, 5);
+    print(@edge, 5);
+    print(@by_kind);
+    print(@by_uid);
+    clear(@by_parent);
+    clear(@by_child);
+    clear(@parent_kind);
+    clear(@edge);
+    clear(@by_kind);
+    clear(@by_uid);
+}
+
+interval:s:30
+{
+    printf("\n--- 新进程的内核调用栈 top3 ---\n");
+    print(@proc_stack, 3);
+    clear(@proc_stack);
+}
+
+END
+{
+    printf("\n--- 收尾:全程汇总 ---\n");
+    printf("总 fork 次数: %d\n", @total);
+    print(@by_parent, 10);
+    print(@proc_stack, 5);
+}
